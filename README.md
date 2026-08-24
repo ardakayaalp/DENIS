@@ -77,7 +77,7 @@ If `uv` is already installed: `uv sync && uv run python gui.py`.
 - **NIST ASD Browser**: in-app NIST Atomic Spectra Database browser + multi-step excitation **scheme finder** -- level/line tables and diagrams (lifetime-encoded opacity), air/vacuum toggle, offline cache, ranked 1-3-step scheme search with laser roles, branching-ratio and isobar-contamination checks, CSV export, save-file persistence
 
 ### UI & Settings
-- Two themes: default dark and **Classic 98 (dark)**, applied live; Lucide icons; splash screen; fast warm start (~1.4 s)
+- Two themes: default dark and **Classic 98 (dark)**, applied live; Lucide icons; splash screen
 - Editor-style save model with dirty tracking (Save / Save As / Save Tab As; clean sessions close silently); **New Window** opens an independent instance
 - **Plot editor everywhere**: right-click any canvas -> *Edit plot...* -- six tabs with real font pickers, add/remove annotations and lines, per-artist position/rotation/z-order, log scales, and its own Ctrl+Z/Ctrl+Y undo
 - App-wide spinbox undo/redo and Ctrl+C/Ctrl+V; wheel-focus guard (scrolling never edits an unfocused field); zoom (Ctrl+= / Ctrl+- / Ctrl+0)
