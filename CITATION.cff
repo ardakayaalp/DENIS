@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: >-
+  If you use DENIS in your work, please cite it as below, and cite
+  satlas2, clstools, and the CIAAW/AME mass tables for the underlying
+  methods and data.
+title: "DENIS: Doppler Estimation and Numerical Inference for Spectroscopy"
+type: software
+version: 1.0.0
+authors:
+  - family-names: Kayaalp
+    given-names: Arda
+    email: arda.kayaalp@kuleuven.be
+    affiliation: KU Leuven
+abstract: >-
+  A desktop application for collinear laser spectroscopy (CLS):
+  beam-time estimation, pre-analysis of ASDF runs, satlas2-based
+  hyperfine-structure fitting, isotope-shift extraction with a
+  Gaussian-process reference-drift correction, and results
+  visualization.
+keywords:
+  - collinear laser spectroscopy
+  - hyperfine structure
+  - isotope shifts
+  - nuclear structure
+  - satlas2
+license: MIT
+repository-code: "https://github.com/ardakayaalp/DENIS"
+# To fill in when a Zenodo archive is minted:
+# doi: 10.xxxx/zenodo.xxxxxxx

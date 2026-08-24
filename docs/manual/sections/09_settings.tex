@@ -1,0 +1,105 @@
+\section{Settings and Save / Load}
+\label{sec:settings}
+
+\subsection{Settings dialog}
+
+\menu{File $\rightarrow$ Settings\dots} opens a scrollable dialog of
+five groups covering the application-wide preferences.
+
+\begin{description}
+    \item[\app{General}.]
+        Settings file location (with an \app{Open} button to reveal
+        the folder), auto-conversion of file paths between Linux and
+        Windows on save-load round trips, the \app{Theme} selector
+        --- \app{Dark (default)} or \app{Classic 98 (dark)}, a retro
+        look with Windows-98-style 3D bevels, sharp corners, and a
+        pixel font, applied live on OK --- the UI scale factor for
+        HiDPI screens (restart required), and the
+        \app{Verbose session log} toggle. A session log is
+        \emph{always} written to a dated file under \code{logs/}
+        (the newest 20 are kept); the toggle raises the log level to
+        DEBUG on the next launch.
+    \item[\app{Performance}.]
+        Maximum number of CPU cores the fitter and the Auto-Fitter
+        may use in parallel (default: cores minus two).
+    \item[\app{Output}.]
+        Default output directory, iteration mode (\app{Auto}
+        numbers \code{iter\_NNN} folders automatically; \app{Manual}
+        uses a custom label), default plot format (PNG / PDF / SVG),
+        and default plot DPI.
+    \item[\app{Fitting Defaults}.]
+        Default optimiser, statistic, y-error model, and x-column for
+        new Analysis blocks; whether the parameter-correlation
+        matrix is shown by default. These seed new blocks only ---
+        existing projects keep their settings.
+    \item[\app{Plot Defaults}.]
+        A \app{Global} tab sets matplotlib rcParams (line and marker
+        sizes, font and tick sizes, axis line width, errorbar cap
+        size, figure and save DPIs); per-plot-type sub-tabs
+        (\app{Fit Plot}, \app{Walk Plot}, \app{Correlation},
+        \app{Chi-sq Map}, \app{Tracker}, \app{Preview / TOF})
+        override the global values for that plot kind --- the
+        fit-plot tab includes count-adaptive marker sizing and the
+        shade-under-fit / values-box options, and the isotope-shift
+        plot has its own tab in the Output block's
+        \app{Plot Options\dots} dialog. \app{Reset All Plot
+        Defaults} returns every value to the built-in defaults.
+\end{description}
+
+Settings are persisted to \code{settings/settings.yaml} inside the
+application folder (not an OS config directory), also reachable from
+the \app{Open} button in the \app{General} group. Older locations
+are migrated automatically on first run.
+
+\subsection{Save and Load}
+
+\denis{} uses a single YAML format for all save / load operations.
+The file has one section per major tab plus shared top-level
+registries:
+
+\begin{lstlisting}
+estimate:         {...}   # incl. last_run (restores plots/log on load)
+preanalysis:      {...}   # projects: files, gates, models, plot options
+analysis:         {...}   # projects (block pipelines) + isotope_shifts
+scan_filters:     {...}   # per-scan exclusions, shared across tabs
+calibrations:     {...}   # per-file voltage-calibration overrides
+calibration_acks: [...]   # acknowledged calibration warnings
+nist_asd:         {...}   # NIST ASD Browser state and ranked schemes
+\end{lstlisting}
+
+The File menu follows the standard editor model, backed by
+dirty tracking (a fingerprint of the full save state):
+
+\begin{description}
+    \item[\app{Save} (\code{Ctrl+S}).] Writes to the currently
+        loaded file with no dialog; falls through to Save As when no
+        file is loaded yet.
+    \item[\app{Save As\dots} (\code{Ctrl+Shift+S}).] Always opens a
+        file dialog and writes every tab.
+    \item[\app{Save Tab As\dots}.] Writes only the active tab's
+        section, merging into an existing file so the other sections
+        are preserved.
+    \item[\app{Load All\dots} (\code{Ctrl+Shift+O}) /
+          \app{Load Tab\dots} (\code{Ctrl+O}).] Populate every
+        recognised section, or only the active tab's. The status bar
+        reports which sections were loaded. Estimate runs and
+        Analysis iterations recorded in the file are restored into
+        the Results tab without re-running.
+    \item[\app{New Window}.] Opens a second, fully independent
+        \denis{} instance (it skips the single-instance guard and
+        the splash screen).
+\end{description}
+
+A legacy top-level Estimate format (with \code{element},
+\code{transition}, \code{isotopes}\dots\ at the root) is detected
+automatically and routed into the \app{Estimate} tab so older
+configuration files continue to work. If a loaded file references
+data files that no longer exist, a locate-or-skip flow runs first
+and rewrites relocated paths back into the YAML.
+
+On exit, \denis{} prompts only when something actually changed since
+the last save or load. The prompt offers \app{Save} (to the current
+file, or Save As when none is loaded), \app{Don't Save}, and
+\app{Cancel}; \app{Cancel} is the default so an accidental
+\code{Enter} never discards work. An untouched or freshly-saved
+session closes silently.

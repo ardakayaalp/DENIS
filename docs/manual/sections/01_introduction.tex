@@ -1,0 +1,82 @@
+\section{Introduction}
+\label{sec:introduction}
+
+\denis{} (\emph{Doppler Estimation and Numerical Inference for
+Spectroscopy}) is an interactive desktop application for planning,
+analysing, and reporting collinear laser spectroscopy (CLS)
+measurements.
+
+In a CLS experiment, an ion or atom beam is overlapped collinearly (or
+anti-collinearly) with a frequency-narrow laser, and the hyperfine
+structure (HFS) of an electronic transition is mapped by scanning the
+beam acceleration voltage to Doppler-tune the laser into resonance with
+each isotope. Quantitative analysis of the resulting spectra yields
+isotope shifts, magnetic dipole and electric quadrupole moments, and
+spin assignments --- the primary observables of nuclear structure
+measurements at facilities such as IGISOL, ISOLDE, and FRIB. For
+background see, e.g., the CLS handbook
+chapter~\cite{cls_handbook}.
+
+\denis{} brings the full experiment cycle into a single tool, organised
+as four top-level tabs:
+
+\begin{description}
+    \item[\app{Estimate}.]
+        Predicts beam time. Given an element, transition, isotope chain
+        (with masses, spins, magnetic moments and quadrupole moments),
+        beam parameters, and yields, it computes per-peak signal rates,
+        the time required to reach a target statistical uncertainty,
+        and a total run-time budget.
+    \item[\app{Pre-Analysis}.]
+        Loads experiment data files (IGISOL-style ASDF via
+        \code{clstools}~\cite{clstools}) and lets the user inspect the
+        time-of-flight gate, set the binning axis (acceleration voltage
+        or Doppler-shifted rest-frame frequency), and overlay a trial
+        HFS model to seed initial fit parameters.
+    \item[\app{Analysis}.]
+        Performs the actual fitting. Each analysis project chains a
+        \app{Source}, one or more \app{Model} blocks, a \app{Fitter},
+        and one or more \app{Output} blocks. Multi-source and
+        multi-model fits share parameters across runs. An
+        \app{Auto-Fitter} explores the parameter space with a
+        multi-start parallel \code{leastsq} sweep when the human seed
+        is too far from the global minimum. Fitting itself is powered
+        by \textsc{satlas2}~\cite{satlas2}.
+    \item[\app{Results}.]
+        Collects per-project fit summaries, exposes the matplotlib
+        figures for editing (line widths, fonts, colours, axis limits)
+        with persistent style files, and exports plots in PNG, PDF, or
+        SVG. A permanent \app{Isotope Shifts} sub-tab combines fit
+        centroids across projects to compute $\delta\nu$ relative to a
+        chosen reference isotope.
+\end{description}
+
+A \menu{Tools} menu provides supporting utilities (Schmidt moment
+calculator, shell configuration plotter, unit converter, SHG crystal
+angle calculator, SFG / DFG calculator, quick plot, and a NIST
+Atomic Spectra Database browser with a laser excitation-scheme
+finder) for tasks adjacent to the main workflow; see
+Section~\ref{sec:tools}.
+
+\paragraph{Supported data format.}
+The \app{Pre-Analysis} and \app{Analysis} tabs in the current release
+read \emph{only} IGISOL-style ASDF files, via the
+\code{clstools}~\cite{clstools} reader. Other facility formats are not
+supported out of the box; adapting \denis{} to a different layout
+requires editing the source-block loader. The \app{Estimate} tab has
+no file-format dependency and can be used independently of any data
+on disk.
+
+\paragraph{Audience.}
+This manual assumes the reader has hands-on experience running CLS
+measurements and is comfortable with concepts such as Doppler tuning,
+hyperfine structure, the $A$ and $B$ coupling constants, and Schmidt
+moments. For background on the underlying physics see
+References~\cite{satlas2,cls_handbook} and
+Appendix~\ref{sec:physics}.
+
+\paragraph{Scope.}
+This is a user manual, not an API reference: it documents the GUI
+workflow and supporting concepts, not the internal Python modules. The
+backend code (in \code{cls\_estimations/} and \code{gui/}) is intended
+to be read directly by developers extending \denis{}.

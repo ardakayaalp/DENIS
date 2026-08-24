@@ -1,0 +1,211 @@
+{
+ "transition-frequency": [
+  "$\\nu_0 = (E_{\\mathrm{upper}} - E_{\\mathrm{lower}}) \\cdot c \\cdot 100 \\,/\\, 10^{6}\\ \\mathrm{MHz}$"
+ ],
+ "beta-from-voltage": [
+  "$\\beta = \\sqrt{1 - \\left(\\frac{E_0}{q e V + E_0}\\right)^2}$",
+  "$E_0 = m c^2$"
+ ],
+ "voltage-from-beta": [
+  "$\\gamma = \\frac{1}{\\sqrt{1 - \\beta^2}}$",
+  "$V = \\frac{(\\gamma - 1)\\, m c^2}{q e}$"
+ ],
+ "doppler-seen": [
+  "$\\nu_{\\mathrm{seen}} = \\nu_{\\mathrm{lab}} \\sqrt{\\frac{1 + \\beta}{1 - \\beta}}\\quad (\\mathrm{anti\\text-collinear})$",
+  "$\\nu_{\\mathrm{seen}} = \\nu_{\\mathrm{lab}} \\sqrt{\\frac{1 - \\beta}{1 + \\beta}}\\quad (\\mathrm{collinear})$"
+ ],
+ "resonance-beta": [
+  "$r = \\frac{\\nu_{\\mathrm{laser}}}{\\nu_{\\mathrm{rest}}}$",
+  "$\\beta_{\\mathrm{anti}} = \\frac{1 - r^2}{1 + r^2}\\quad (\\mathrm{anti\\text-collinear})$",
+  "$\\beta_{\\mathrm{col}} = \\frac{r^2 - 1}{r^2 + 1}\\quad (\\mathrm{collinear})$"
+ ],
+ "laser-frequency-resonance": [
+  "$\\nu_{\\mathrm{laser}} = \\nu_{\\mathrm{rest}} \\sqrt{\\frac{1 - \\beta}{1 + \\beta}}\\quad (\\mathrm{anti\\text-collinear})$",
+  "$\\nu_{\\mathrm{laser}} = \\nu_{\\mathrm{rest}} \\sqrt{\\frac{1 + \\beta}{1 - \\beta}}\\quad (\\mathrm{collinear})$"
+ ],
+ "fwhm-to-sigma": [
+  "$\\sigma = \\frac{\\mathrm{FWHM}}{2 \\sqrt{2 \\ln 2}}$"
+ ],
+ "simulated-spectrum": [
+  "$y(\\Delta V) = \\sum_k a_k \\exp\\!\\left(-\\frac{(\\nu_{\\mathrm{seen}}(\\Delta V) - (\\nu_c + \\delta_k))^2}{2 \\sigma^2}\\right)$"
+ ],
+ "lab-laser-frequency": [
+  "$\\nu_{\\mathrm{lab}}\\,[\\mathrm{MHz}] = \\lambda\\,[\\mathrm{cm}^{-1}] \\cdot h \\cdot c \\cdot 100 \\,/\\, 10^{6}$"
+ ],
+ "beam-energy-from-frequency": [
+  "$V_{\\mathrm{beam}} = \\frac{E_0}{q e}\\left(\\frac{\\tilde{\\nu}_{\\mathrm{laser}}^2 + \\tilde{\\nu}_{\\mathrm{rest}}^2}{2\\, \\tilde{\\nu}_{\\mathrm{rest}}\\, \\tilde{\\nu}_{\\mathrm{laser}}} - 1\\right)$"
+ ],
+ "transition-fundamental": [
+  "$\\nu_{\\mathrm{trans}} = E_{\\mathrm{upper}} - E_{\\mathrm{lower}}$",
+  "$\\nu_{\\mathrm{fund}} = \\nu_{\\mathrm{trans}} \\,/\\, h$"
+ ],
+ "voltage-to-frequency-projection": [
+  "$\\nu_{\\mathrm{rest}} = \\nu_{\\mathrm{seen}}\\big(\\beta(V_{\\mathrm{cooler}} - V_{\\mathrm{scan}})\\big) - \\frac{\\nu_{\\mathrm{ref}}}{10^{6}}$"
+ ],
+ "hfs-energy": [
+  "$\\Delta E_F = \\frac{A}{2}\\, C + B\\, \\frac{\\frac{3}{2} C(C+1) - 2 I(I+1) J(J+1)}{4 I(2I-1) J(2J-1)}$",
+  "$C = F(F+1) - I(I+1) - J(J+1)$"
+ ],
+ "a-scaling": [
+  "$A = \\frac{\\mu\\, I_{\\mathrm{ref}}\\, A_{\\mathrm{ref}}}{\\mu_{\\mathrm{ref}}\\, I}$"
+ ],
+ "b-scaling": [
+  "$B = \\frac{Q\\, B_{\\mathrm{ref}}}{Q_{\\mathrm{ref}}}$"
+ ],
+ "schmidt-proton": [
+  "$\\mu_p = j - \\frac{1}{2} + \\frac{g_s}{2} \\quad (j = \\ell + \\frac{1}{2})$",
+  "$\\mu_p = \\frac{j}{j+1}\\left(j + \\frac{3}{2} - \\frac{g_s}{2}\\right) \\quad (j = \\ell - \\frac{1}{2})$"
+ ],
+ "schmidt-neutron": [
+  "$\\mu_n = \\frac{g_s}{2} \\quad (j = \\ell + \\frac{1}{2})$",
+  "$\\mu_n = -\\frac{j}{j+1}\\,\\frac{g_s}{2} \\quad (j = \\ell - \\frac{1}{2})$"
+ ],
+ "two-particle-lande": [
+  "$g(I) = \\frac{1}{2}(g_1 + g_2) + \\frac{1}{2}(g_1 - g_2)\\,\\frac{j_1(j_1+1) - j_2(j_2+1)}{I(I+1)}$",
+  "$\\mu = g(I)\\,I$"
+ ],
+ "g-factor": [
+  "$g = \\frac{\\mu}{j}$"
+ ],
+ "nordheim-rule": [
+  "$N = (j_p - \\ell_p) + (j_n - \\ell_n)$",
+  "$J = |j_p - j_n| \\quad (N \\approx 0)$",
+  "$J = j_p + j_n \\quad (\\mathrm{otherwise})$"
+ ],
+ "signal-rate": [
+  "$S = Y\\,\\varepsilon\\,r_{\\mathrm{peak}}$"
+ ],
+ "on-peak-time": [
+  "$t = \\frac{\\sigma^2 (S + B)}{S^2}$"
+ ],
+ "sweeps-total-time": [
+  "$n_{\\mathrm{steps}} = \\max\\!\\left(1,\\ \\mathrm{round}\\!\\left(\\frac{V_{\\mathrm{range}}}{V_{\\mathrm{step}}}\\right)\\right)$",
+  "$n_{\\mathrm{sweeps}} = \\max\\!\\left(1,\\ \\left\\lceil \\frac{t_{\\mathrm{on\\,peak}}}{t_{\\mathrm{dwell}}}\\right\\rceil\\right)$",
+  "$T = n_{\\mathrm{sweeps}}\\,n_{\\mathrm{steps}}\\,t_{\\mathrm{dwell}}$"
+ ],
+ "tof-gated-background": [
+  "$R_{\\mathrm{bg}} = R_{\\mathrm{cont}}\\cdot \\frac{t_{\\mathrm{gate}}}{t_{\\mathrm{dwell}}}$"
+ ],
+ "spin-distribution-ratio": [
+  "$\\frac{P(J_{gs})}{P(J_m)} = \\frac{2J_{gs}+1}{2J_m+1}\\exp\\!\\left(-\\frac{J_{gs}(J_{gs}+1) - J_m(J_m+1)}{2\\sigma^2}\\right)$"
+ ],
+ "bunches-per-scan": [
+  "$N_{\\mathrm{bunch/scan}} = \\left(\\sum_{\\mathrm{ranges}}\\left[\\mathrm{round}\\!\\left(\\frac{V_{hi}-V_{lo}}{\\Delta V}\\right)+1\\right]\\right)\\cdot N_{\\mathrm{bunch/ch}}$"
+ ],
+ "robust-cooler-stats": [
+  "$V_{\\mathrm{ref}} = \\mathrm{median}(v)$",
+  "$\\sigma_{\\mathrm{rob}} = 1.4826\\cdot \\mathrm{MAD},\\quad \\mathrm{MAD} = \\mathrm{median}(|v - V_{\\mathrm{ref}}|)$",
+  "$\\mathrm{spike}: |v - V_{\\mathrm{ref}}| > 3\\,\\sigma_{\\mathrm{rob}}$"
+ ],
+ "chi-square": [
+  "$\\chi^2 = \\sum_i \\frac{\\left(y_i - f(x_i;\\,\\theta)\\right)^2}{\\sigma_i^2}$"
+ ],
+ "poisson-llh": [
+  "$-2\\ln L = 2\\sum_i \\left[\\,m_i - y_i + y_i \\ln(y_i / m_i)\\,\\right]$",
+  "$(y_i > 0)$"
+ ],
+ "gaussian-llh": [
+  "$-2\\ln L = \\sum_i \\frac{(y_i - m_i)^2}{\\sigma_i^2}$",
+  "$(\\sigma_i\\ \\mathrm{model\\text{-}dependent})$"
+ ],
+ "model-yerr": [
+  "$\\sigma_i = \\sqrt{f(x_i;\\,\\theta)}$"
+ ],
+ "gaussian-prior": [
+  "$\\Delta\\chi^2 = \\left(\\frac{\\mathrm{value} - \\mathrm{prior}}{\\sigma}\\right)^2$"
+ ],
+ "scale-covariance": [
+  "$\\sigma_\\theta \\rightarrow \\sigma_\\theta\\,\\sqrt{\\chi^2_\\nu}$"
+ ],
+ "lcr-calibration": [
+  "$\\mathrm{DV}_{\\mathrm{cal}} = (a_0 + a_1\\,\\mathrm{DV} + a_2\\,\\mathrm{DV}^2 + a_3\\,\\mathrm{DV}^3)\\cdot \\mathrm{VAccDiv}$"
+ ],
+ "cooler-correction": [
+  "$V = V_{\\mathrm{cooler}}\\cdot \\mathrm{VCoolDiv} + \\mathrm{VCoolOffset} - \\mathrm{DV}_{\\mathrm{cal}}$"
+ ],
+ "reference-shift": [
+  "$F = (\\mathrm{WN\\_to\\_f}\\cdot \\mathrm{WN}) - \\mathrm{Reference}$"
+ ],
+ "weighted-average": [
+  "$\\bar{c} = \\frac{\\sum_i w_i c_i}{\\sum_i w_i}$",
+  "$\\sigma = \\frac{1}{\\sqrt{\\sum_i w_i}}$",
+  "$w_i = \\frac{1}{\\sigma_i^2}$"
+ ],
+ "birge-inflation": [
+  "$\\chi^2_\\nu = \\frac{\\sum_i w_i (c_i - \\bar{c})^2}{N - 1}$",
+  "$b = \\max(1,\\ \\sqrt{\\chi^2_\\nu})$",
+  "$\\sigma_{\\mathrm{scatter}} = \\sqrt{(b\\,\\sigma_{\\mathrm{fit}})^2 - \\sigma_{\\mathrm{fit}}^2}$"
+ ],
+ "isotope-shift": [
+  "$\\delta\\nu = c_A - c_{\\mathrm{ref}}$",
+  "$\\sigma_{\\delta\\nu} = \\sqrt{\\sigma_A^2 + \\sigma_{\\mathrm{ref}}^2}$"
+ ],
+ "shift-variance-gp": [
+  "$\\mathrm{Var}(\\delta\\nu)_{\\mathrm{corr}} = \\sigma_{c,A}^2 + \\sigma_{c,\\mathrm{ref}}^2 - 2\\,\\mathrm{Cov}(\\bar{c}_A, \\bar{c}_{\\mathrm{ref}})$"
+ ],
+ "voltage-systematic": [
+  "$\\sigma_{\\mathrm{sys}} = \\sqrt{\\left(\\left|\\frac{d\\nu}{dV}\\right|\\,\\mathrm{SEM}_V\\right)^2 + (\\mathrm{SEM}_{\\mathrm{laser}}\\, f_{\\mathrm{Doppler}})^2}$"
+ ],
+ "auto-sem": [
+  "$\\mathrm{SEM} = \\frac{\\sigma}{\\sqrt{N}}$"
+ ],
+ "gp-rbf": [
+  "$k(t_1, t_2) = \\eta^2 \\exp\\!\\left(-\\frac{(t_1 - t_2)^2}{2\\ell^2}\\right)$"
+ ],
+ "gp-matern": [
+  "$k(t_1, t_2) = \\eta^2\\left(1 + r + \\frac{r^2}{3}\\right)\\exp(-r)$",
+  "$r = \\frac{\\sqrt{5}\\,|t_1 - t_2|}{\\ell}$"
+ ],
+ "gp-periodic": [
+  "$k(t_1, t_2) = \\exp\\!\\left(-\\frac{1}{2}\\left(\\frac{\\sin(\\pi |t_1 - t_2| / T)}{\\ell}\\right)^2\\right)$"
+ ],
+ "gp-posterior": [
+  "$\\mu(t_*) = K_* \\,\\alpha$",
+  "$\\sigma^2(t_*) = k(t_*, t_*) - \\left\\| L^{-1} K_*^{\\top} \\right\\|^2$",
+  "$K = K_{\\mathrm{train}} + \\mathrm{diag}(\\sigma_i^2 + \\sigma_n^2) + \\epsilon I$"
+ ],
+ "gp-propagated-sigma": [
+  "$\\sigma_{\\delta\\nu,\\mathrm{corr}}^2 = \\sigma_{\\mathrm{GP},A}^2 + \\sigma_{\\mathrm{GP},\\mathrm{ref}}^2 - 2\\,\\mathrm{Cov}_{\\mathrm{GP}}(t_A, t_{\\mathrm{ref}})$"
+ ],
+ "wavelength-conversions": [
+  "$\\tilde{\\nu}\\,[\\mathrm{cm}^{-1}] = \\frac{1}{100\\,\\lambda}$",
+  "$\\nu = \\frac{c}{\\lambda}$",
+  "$E = \\frac{h\\,c}{\\lambda}$"
+ ],
+ "shg-phase-matching": [
+  "$\\frac{1}{n_e^2(\\theta,\\lambda_{\\mathrm{SHG}})} = \\frac{\\cos^2\\theta}{n_o^2(\\lambda_s)} + \\frac{\\sin^2\\theta}{n_e^2(\\lambda_s)}$",
+  "$\\sin^2\\theta = \\frac{1/n_o^2(\\lambda_f) - 1/n_o^2(\\lambda_s)}{1/n_e^2(\\lambda_s) - 1/n_o^2(\\lambda_s)}$"
+ ],
+ "sellmeier": [
+  "$n^2(\\lambda) = A + \\frac{B}{\\lambda^2 - C} - D\\,\\lambda^2 \\quad (\\lambda\\ \\mathrm{in}\\ \\mu\\mathrm{m})$",
+  "$n = \\sqrt{\\max(n^2,\\,1)}$"
+ ],
+ "sfg-dfg": [
+  "$\\sigma_i = \\frac{1}{100\\,\\lambda_i}$",
+  "$\\sigma_{\\mathrm{out}} = \\sigma_1 + \\sigma_2 \\quad (\\mathrm{SFG})$",
+  "$\\sigma_{\\mathrm{out}} = \\left| \\sigma_1 - \\sigma_2 \\right| \\quad (\\mathrm{DFG})$"
+ ],
+ "clipped-error-bars": [
+  "$\\sigma^{-}_i = \\min\\!\\left(\\sigma_i,\\; \\max(y_i,\\,0)\\right)$",
+  "$\\sigma^{+}_i = \\sigma_i$"
+ ],
+ "tof-bin-edges": [
+  "$e_0 = c_0 - \\frac{1}{2}$",
+  "$e_k = c_k - \\frac{1}{2} \\quad (0 \\leq k < n)$",
+  "$e_n = c_{n-1} + \\frac{1}{2}$"
+ ],
+ "zero-bin-masking": [
+  "$e_k = \\frac{1}{2}\\left(x_{k-1} + x_k\\right) \\quad (0 < k < n)$",
+  "$e_0 = x_0 - \\frac{1}{2}\\left(x_1 - x_0\\right)$",
+  "$e_n = x_{n-1} + \\frac{1}{2}\\left(x_{n-1} - x_{n-2}\\right)$"
+ ],
+ "autosize-by-counts": [
+  "$\\mathrm{region} = \\mathrm{low} \\quad (c \\leq c_{\\mathrm{low}})$",
+  "$\\mathrm{region} = \\mathrm{med} \\quad (c_{\\mathrm{low}} < c \\leq c_{\\mathrm{med}})$",
+  "$\\mathrm{region} = \\mathrm{high} \\quad (c > c_{\\mathrm{med}})$"
+ ],
+ "ui-scale-factor": [
+  "$\\mathrm{QT\\_SCALE\\_FACTOR} = s \\quad (s > 0)$",
+  "$\\mathrm{QT\\_SCALE\\_FACTOR}\\ \\mathrm{unset} \\quad (s \\leq 0,\\ \\mathrm{system\\ DPI\\ auto})$"
+ ]
+}

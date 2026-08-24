@@ -1,0 +1,85 @@
+% ─────────────────────────────────────────────────────────────
+%  DENIS user-manual preamble: shared packages, styling, macros
+% ─────────────────────────────────────────────────────────────
+
+% Encoding & fonts
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{textcomp}
+
+% Page layout
+\usepackage[a4paper,top=2.5cm,bottom=2.5cm,left=2.5cm,right=2.5cm,
+            headheight=14pt]{geometry}
+\usepackage{microtype}
+
+% Headers / footers
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\thepage}
+\fancyhead[LO]{\textit{\nouppercase{\rightmark}}}
+\fancyhead[RE]{\textit{DENIS User Manual}}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% Math, units
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{siunitx}
+
+% Lists
+\usepackage{enumitem}
+\setlist{itemsep=2pt, parsep=0pt}
+
+% Tables
+\usepackage{booktabs}
+\usepackage{array}
+
+% Graphics
+\usepackage{graphicx}
+\graphicspath{{figs/}}
+\usepackage{caption}
+\captionsetup{font=small, labelfont=bf, margin=10pt}
+\usepackage{subcaption}
+
+% Code listings
+\usepackage{xcolor}
+\definecolor{codebg}{HTML}{F5F5F5}
+\definecolor{codecomment}{HTML}{6A9955}
+\definecolor{codestring}{HTML}{A31515}
+\definecolor{codekeyword}{HTML}{0000C0}
+\usepackage{listings}
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{codebg},
+    commentstyle=\color{codecomment},
+    keywordstyle=\color{codekeyword}\bfseries,
+    stringstyle=\color{codestring},
+    frame=single,
+    framesep=4pt,
+    rulecolor=\color{black!20},
+    breaklines=true,
+    breakatwhitespace=true,
+    columns=fullflexible,
+    showstringspaces=false,
+    aboveskip=8pt,
+    belowskip=8pt,
+}
+
+% Hyperlinks
+\usepackage[colorlinks=true,
+            urlcolor=blue!60!black,
+            linkcolor=black,
+            citecolor=blue!60!black]{hyperref}
+
+% Bibliography (biber backend, numeric-comp style)
+\usepackage[backend=biber, style=numeric-comp, sorting=none,
+            maxbibnames=9, giveninits=true, url=true]{biblatex}
+\addbibresource{references.bib}
+
+% ─── DENIS-specific macros ───────────────────────────────────
+\newcommand{\denis}{\textsc{DENIS}}
+\newcommand{\app}[1]{\textsf{\textbf{#1}}}     % UI element / button name
+\newcommand{\menu}[1]{\textsf{#1}}             % menu path, e.g. \menu{File > Save All}
+\newcommand{\code}[1]{\texttt{\small #1}}      % inline code / paths
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}

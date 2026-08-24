@@ -1,0 +1,123 @@
+# CLS Runtime Estimation Example - Using Schmidt Moments
+#
+# This example demonstrates using Schmidt single-particle moment estimates
+# when experimental nuclear moments are unknown. The 54Co isomer uses a
+# Schmidt estimate from a proton in the 1f7/2 orbital.
+
+element: Co
+Z: 27
+
+transition:
+  lower_level_cm: 3350.494
+  upper_level_cm: 47078.494
+  J_lower: 5
+  J_upper: 6
+
+laser:
+  setpoint_cm: 10920.071952    # fundamental laser wavenumber
+  harmonic: 4                  # multiplier (effective = setpoint * harmonic)
+
+beam:
+  voltage_kV: 29.9
+  charge_state: 1
+  geometry: anti-collinear
+
+linewidth:
+  fwhm_MHz: 100
+
+# Optional: g_s quenching factor for Schmidt calculations (default: 1.0)
+# Typical values: 0.6-0.8 to account for nuclear medium effects
+g_s_factor: 0.7
+
+reference:
+  A: 59
+  I: 3.5
+  mu: 4.627
+  Q: 0.42
+  A_lower_MHz: 1056.8
+  B_lower_MHz: 0.0
+  A_upper_MHz: 333.52
+  B_upper_MHz: 0.0
+
+scan:
+  voltage_range_V: 100
+  step_size_V: 1.0
+  dwell_time_ms: 200
+
+statistics:
+  required_sigma: 3.0
+
+isotopes:
+  # Reference isotope - experimental values
+  - A: 59
+    label: "59Co"
+    I: 3.5
+    mu: 4.627
+    Q: 0.42
+    isotope_shift_MHz: 0.0
+    yield_ions_per_sec: 1.0e6
+    spectroscopic_efficiency: 0.001
+    background_rate_Hz: 10
+    peaks_to_measure: 3
+
+  # Isotope with I=0 ground state and isomer with Schmidt moment
+  - A: 54
+    label: "54Co"
+    I: 0
+    mu: 0.0
+    Q: 0.0
+    isotope_shift_MHz: -2135
+    yield_ions_per_sec: 1000
+    spectroscopic_efficiency: 0.001
+    background_rate_Hz: 10
+    peaks_to_measure: 1
+    isomer:
+      I: 7
+      mu: 0.0                   # Will be overridden by Schmidt calculation
+      Q: 0.0
+      isotope_shift_MHz: -2100
+      production_ratio: 0.8     # 80% g.s., 20% isomer
+      peaks_to_measure: 5
+      plot_with_gs: true
+      # Override HFS A constants (experimental values)
+      A_lower_MHz: 370.0
+      A_upper_MHz: 117.0
+      # Use Schmidt moment estimate for μ (single proton in f7/2)
+      schmidt_valence:
+        type: proton
+        orbital: 1f7/2
+
+  # Example: Isotope using Schmidt estimate for ground state
+  # (single valence neutron)
+  # - A: 61
+  #   label: "61Co"
+  #   I: 3.5
+  #   mu: 0.0                   # Will be calculated from Schmidt
+  #   Q: 0.0
+  #   isotope_shift_MHz: 0.0
+  #   yield_ions_per_sec: 1.0e5
+  #   spectroscopic_efficiency: 0.001
+  #   background_rate_Hz: 10
+  #   peaks_to_measure: 5
+  #   schmidt_valence:
+  #     type: neutron
+  #     orbital: 1f5/2
+
+  # Example: Two-particle Schmidt calculation
+  # (proton + neutron, total I=2)
+  # - A: 62
+  #   label: "62Co"
+  #   I: 2.0
+  #   mu: 0.0                   # Will be calculated from Schmidt
+  #   Q: 0.0
+  #   isotope_shift_MHz: 0.0
+  #   yield_ions_per_sec: 1.0e5
+  #   spectroscopic_efficiency: 0.001
+  #   background_rate_Hz: 10
+  #   peaks_to_measure: 5
+  #   schmidt_valence:
+  #     type1: proton
+  #     orbital1: 2p3/2
+  #     type2: neutron
+  #     orbital2: 1f5/2
+  #     I: 2.0

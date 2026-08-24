@@ -1,0 +1,175 @@
+\section{Estimate Tab}
+\label{sec:estimate}
+
+The \app{Estimate} tab predicts beam time before a measurement. Given
+an element, an electronic transition, an isotope chain, and beam
+parameters, it computes per-peak signal rates, the on-peak time
+required to reach a target statistical significance, the number of
+voltage sweeps needed to cover the requested scan range, and a
+grand-total run time. A \app{Spectrum only} switch suppresses the
+timing pass and produces only the simulated lineshape --- useful when
+planning the scan window itself.
+
+The tab is a single surface with three resizable columns: the global
+parameters on the left (Figure~\ref{fig:quickstart_estimate_tab}), the
+isotope list in the middle, and a right column stacking the
+\app{Run Options} group, the plot display, and the streaming log
+(Figure~\ref{fig:quickstart_estimate_output}). The expand button on
+the plot panel temporarily expands the plots over the whole tab;
+click it again to bring the parameter columns back.
+
+\subsection{Global parameters}
+
+The left column holds settings shared by every isotope.
+
+\begin{description}
+    \item[\app{Element \& Transition}.]
+        Element symbol, atomic number $Z$, the lower and upper levels
+        of the electronic transition in cm$^{-1}$, and their total
+        angular momenta $J_l$, $J_u$.
+    \item[\app{Beam}.]
+        Acceleration voltage (kV), ion charge state, and laser-ion
+        geometry --- \app{collinear} or \app{anti-collinear}.
+    \item[\app{Laser}.]
+        Harmonic order and the setpoint of the \emph{fundamental}
+        laser in cm$^{-1}$. As an alternative to a fixed setpoint,
+        tick \app{Anchor to isotope}, choose an isotope and its state
+        (g.s.\ or isomer), and enter the voltage offset \app{dV} from
+        $V_0$ at which that resonance should sit; \denis{} then
+        back-solves the laser frequency required to place the
+        centroid at that voltage.
+    \item[\app{Linewidth}.]
+        Full-width-half-maximum used when drawing simulated spectra
+        (MHz). Does not affect timing.
+    \item[\app{Scan}.]
+        Voltage range (full window, $\pm$ half on either side of
+        $V_0$), step size, and dwell time per step (ms).
+\end{description}
+
+The checkable \app{Statistics (Timing Mode)} group is the master
+switch for timing: unchecking it puts the whole tab in spectrum-only
+mode (rates, backgrounds, and yields are hidden, and the scan step
+size and dwell time are disabled). When checked it exposes:
+
+\begin{itemize}
+    \item \app{Required $\sigma$} --- target statistical significance per
+        peak; defaults to $3\sigma$.
+    \item \app{Uniform timing (global default)} --- when ticked, every
+        measured peak gets the same on-peak time, computed for the
+        strongest peak assuming full yield. Useful when a single dwell
+        setting must cover the whole scan. Any isotope can override
+        this locally with its own \app{Uniform timing} control.
+\end{itemize}
+
+\subsection{Isotope entries}
+
+The middle column contains one expandable panel per isotope, added
+with the \app{+ Add Isotope} button at the top. Panels are reordered
+by dragging the hamburger handle and are color-striped by position so
+the same isotope reads consistently across the tab. Each panel
+exposes:
+
+\begin{description}
+    \item[Mass number $A$ and label] used in plot legends and log
+        headers.
+    \item[Nuclear spin $I$] integer or half-integer.
+    \item[$\mu$ ($\mu_N$) and $Q$ (b)] magnetic dipole and electric
+        quadrupole moments.
+    \item[Isotope shift (MHz)] centroid offset from the reference
+        isotope.
+    \item[Yield (ions/s)] expected ion rate (a scientific-notation
+        field).
+    \item[Efficiency] one detected photon per
+        $1/\eta$ ions; the log echoes this expanded as e.g.\
+        ``$1$ photon per $500$ ions''.
+    \item[Peaks to measure] how many of the strongest hyperfine peaks
+        enter the timing estimate (default 1; raise it when several
+        components are diagnostic).
+    \item[Background] either a flat rate (Hz), or a continuous rate
+        combined with a TOF-gate width (\si{\micro\second}) and the
+        dwell time, which then collapses to an effective rate
+        automatically.
+\end{description}
+
+Exactly one isotope is marked as the \app{Reference}. Its hyperfine
+$A$ and $B$ constants (entered in MHz, lower- and upper-state
+separately) are used to scale the constants of every other isotope
+via the Schmidt-moment ratio. Tick \app{Override A/B constants} on a
+non-reference isotope to bypass scaling and supply explicit values ---
+useful when high-quality measured constants are already available
+(this is the case shown for \textsuperscript{51}V in
+Figure~\ref{fig:quickstart_estimate_tab}).
+
+\paragraph{Schmidt-moment auto-calculation.}
+For an isotope whose $\mu$ is unknown, tick \app{Use Schmidt moment}
+to derive it from the shell model. The single-particle case takes a
+nucleon type (\code{p}/\code{n}) and an orbital (e.g.\ \code{f7/2}).
+For odd-odd nuclei, choose the two-particle variant and supply two
+orbital configurations together with the resulting spin $I$. The
+unquenched Schmidt $\mu$ is auto-filled into the panel's $\mu$ field
+(undoable with \code{Ctrl+Z}); the configured $g_s$ quenching factor
+is applied during the run, and the log prints the configuration
+string next to the value actually used. The same calculator is
+available standalone under \menu{Tools $\rightarrow$ Schmidt Moment
+Calculator} (Section~\ref{sec:tools}).
+
+\paragraph{Isomers.}
+Tick \app{Has isomer} to expand a sub-panel for an isomeric state.
+The isomer carries its own spin, moments, isotope shift, and one of
+three yield specifications: an explicit \app{Yield} (independent of
+the ground state), a \app{Production ratio} in $[0,1]$ that splits
+the parent's yield, or a \app{Spin distribution} $\sigma$ that
+estimates the split from spin statistics --- the latter is useful for
+surface-ion sources where high-spin states are populated
+preferentially. The isomer contributes its own peaks to the simulated
+spectrum and its own row to the timing table.
+
+\subsection{Running the estimation}
+
+Click \app{Run Estimation} in the \app{Run Options} group (right
+column). The log streams in real time and, on completion, contains
+in order:
+
+\begin{enumerate}
+    \item A header summarising the inputs and, in anchor mode, the
+        derived laser setpoint.
+    \item Per isotope: signal rate, on-peak time per measured peak,
+        the number of sweeps required to accumulate enough statistics
+        on each peak, and a subtotal in hours and in 8\,h shifts.
+    \item A \app{Nuclear parameters} summary table with the $\mu$
+        values actually used (config or Schmidt) and the resulting
+        $A$, $B$ constants.
+    \item The grand-total run time across all isotopes.
+    \item Two peak lists --- one sorted by intensity, one by voltage
+        --- covering every hyperfine component of every isotope and
+        isomer.
+\end{enumerate}
+
+The log is also written verbatim to a \code{.log} file in the run's
+output folder (\code{cls\_<timestamp>} under the chosen
+\app{Output directory}); the YAML used for the run is preserved
+alongside it for reproducibility. The run additionally persists its
+plot arrays and peak table (\code{estimate\_results.npz},
+\code{peaks.csv}), and the save file records the run folder --- so a
+saved session restores its plots, peak table, and log on load without
+re-running.
+
+\subsection{Simulated spectra}
+
+The plot panel shows a simulated voltage spectrum per isotope on the
+configured scan range, with vertical dashed lines at each hyperfine
+peak position (Figure~\ref{fig:quickstart_estimate_output}b). The
+\app{View} drop-down switches between \app{Individual Spectra} (one
+panel per isotope), \app{Combined Overview} (all isotopes overlaid),
+and \app{Peak List} (a sortable table of every hyperfine component).
+\app{Edit Plot} opens the matplotlib style editor; \app{Open PDF}
+reveals the exported PDF in the system file viewer.
+
+\subsection{Loading a previous estimation}
+
+\app{Load Estimation\dots} (next to \app{Run Estimation}) reopens any
+previous \code{cls\_<timestamp>} run folder for viewing --- plots,
+peak table, and log are restored without re-running and without
+creating new output. Runs from before the \code{.npz} persistence
+existed hold only PDFs; their pages are rendered onto the live
+matplotlib canvas, so pan/zoom/save still work.

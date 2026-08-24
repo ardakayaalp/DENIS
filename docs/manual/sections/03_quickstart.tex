@@ -1,0 +1,209 @@
+\section{Quick Start}
+\label{sec:quickstart}
+
+This walkthrough takes the reader from a fresh install through one
+complete cycle: estimate beam time, pre-analyse a measured spectrum,
+fit it, and review the result. No example data is bundled with this
+release --- substitute paths to your own ASDF file where indicated.
+
+\subsection{Launching the application}
+
+Double-click the desktop shortcut created during install
+(Section~\ref{sec:installation}), or run
+\code{uv run python gui.py} from the project root. After a brief
+splash the main window opens with the four tabs across the top:
+\app{Estimate}, \app{Pre-Analysis}, \app{Analysis},
+\app{Results}.
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.95\textwidth]{fig_quickstart_main_window.png}
+    \caption{The \denis{} main window after launch, with the four
+        top-level tabs visible. The \app{Estimate} tab is opened by
+        default; its isotope column is empty until isotopes are
+        added.}
+    \label{fig:quickstart_main_window}
+\end{figure}
+
+\subsection{Setting up an estimation}
+
+Open the \app{Estimate} tab. The left column of global parameters
+holds the element symbol and atomic number, the lower and upper
+levels of the electronic transition (in cm$^{-1}$) with their total
+angular momenta $J$, the laser harmonic, the beam acceleration
+voltage, and the scan range, step size, and dwell time.
+
+The middle column contains one panel per isotope (\app{+ Add
+Isotope}). For each isotope, supply the mass number $A$, nuclear spin
+$I$, magnetic moment $\mu$ (in nuclear magnetons), quadrupole moment
+$Q$ (in barns), expected isotope shift, ion yield (ions/s), and
+spectroscopic efficiency. Mark one isotope as the
+\app{Reference} --- its hyperfine $A$ and $B$ constants (entered in
+MHz) are used to scale the constants of the others via
+nuclear-moment ratios.
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.95\textwidth]{fig_quickstart_estimate_tab.png}
+    \caption{\app{Estimate} tab with the global parameters
+        (\app{Element \& Transition}, \app{Beam}, \app{Laser},
+        \app{Linewidth}, \app{Scan}) filled in for a vanadium chain,
+        and the first isotope panel (\textsuperscript{51}V, marked
+        \app{Reference}) expanded to show the per-isotope inputs and
+        an explicit $A$/$B$ override.}
+    \label{fig:quickstart_estimate_tab}
+\end{figure}
+
+When the form is complete, click \app{Run Estimation} (right
+column). The calculation streams into the log at the bottom of that
+column: per-peak signal rates, the on-peak time needed for the
+requested $\sigma$, the number of sweeps to cover the chosen voltage
+range, and a grand-total run time. The plot panel above the log
+shows the simulated spectrum for each isotope on the requested scan
+range; its \app{View} drop-down includes a sortable \app{Peak List}
+of every hyperfine component, and the log prints the peaks sorted
+both by intensity and by voltage.
+
+\begin{figure}[hbtp]
+    \centering
+    \begin{subfigure}{0.95\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{fig_quickstart_estimate_run.png}
+        \caption{The run log. The header summarises the
+            inputs; the body lists each hyperfine peak with offset,
+            voltage, and intensity.}
+    \end{subfigure}\\[8pt]
+    \begin{subfigure}{0.95\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{fig_quickstart_estimate_plots.png}
+        \caption{The plot panel. Each isotope gets its own
+            simulated voltage spectrum on the requested scan range;
+            dashed lines mark the individual hyperfine peaks.}
+    \end{subfigure}
+    \caption{\app{Estimate} output after a successful run.}
+    \label{fig:quickstart_estimate_output}
+\end{figure}
+
+\subsection{Pre-analysing measured data}
+
+Switch to the \app{Pre-Analysis} tab and click \app{Open\dots}.
+Select your IGISOL-style ASDF run file (for example
+\code{\textasciitilde/data/your\_run.asdf}). The file appears in the
+file list on the left with its checkbox ticked, and its
+time-of-flight and voltage spectra load into the centre panels.
+
+Enable the TOF \app{Gate} and drag the orange region (or type the
+bounds) to isolate the ion bunch from background. After clicking
+inside a model value box, the keyboard arrows step the value by the
+digit under the cursor --- click on a coarse digit for big jumps, on
+a fine one for small adjustments. The voltage spectrum re-bins live
+as the gate moves.
+
+To inspect the spectrum in the rest frame, switch the \app{X-axis}
+from \app{Voltage} to \app{Frequency} (or \app{Wavenumber}). To
+overlay a trial HFS model, click \app{+ Add Model} in the left
+column and set the centroid, linewidths, and $A$ / $B$ constants;
+the model curve updates live on top of the data. Iterate until the
+trial line positions sit close to the visible peaks --- this gives a
+clean seed for the fitter.
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.98\textwidth]{fig_quickstart_preanalysis.png}
+    \caption{\app{Pre-Analysis} tab with one rhodium run loaded.
+        Top centre: the time-of-flight spectrum with the gate
+        highlighted in orange. Centre: the binned spectrum (blue
+        data) with two HFS models overlaid (green ground state,
+        purple isomer) on the right-panel parameters. Left: file
+        list and binning controls; right: the HFS model parameter
+        editor.}
+    \label{fig:quickstart_preanalysis}
+\end{figure}
+
+\subsection{Building an analysis project}
+
+Open the \app{Analysis} tab and click \app{+ Create Analysis
+Project}. Each project lives in its own sub-tab named after the
+isotope or measurement.
+
+Inside the project, assemble a pipeline of blocks (drag the handle on
+the left of each block to reorder):
+
+\begin{enumerate}
+    \item A \app{Source} block holding your run files (use
+        \app{Import from Pre-Analysis} to pull the files, physics
+        parameters, and gates you settled on there in one click).
+    \item One or more \app{Model} blocks --- typically one per
+        isotopomer (ground state, isomer). Set initial $A$, $B$,
+        amplitudes, FWHMs, and centroid, and set the \app{Mode} of
+        the parameters that should float to \app{Free}.
+    \item One \app{Fitter} block --- pick the optimiser
+        (\code{leastsq}, \code{least\_squares}, \code{slsqp},
+        \code{emcee}, \dots) and the statistic (chi-square / Poisson
+        LLH / Gaussian LLH).
+    \item One or more \app{Output} blocks --- enable the plots you
+        want (data + fit, residuals, walk plot for MCMC, parameter
+        correlations, $\chi^2$ map).
+\end{enumerate}
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.98\textwidth]{fig_quickstart_analysis_pipeline.png}
+    \caption{An \app{Analysis} project (here, an \textsuperscript{209}Bi
+        fit) showing the four-block pipeline from left to right:
+        \app{Source} (file selection, physics parameters, ToF and
+        binning), \app{Model} (HFS settings, parameter table with
+        per-parameter modes, peak amplitudes), \app{Fitter} (method,
+        statistics, execution controls), and \app{Output} (which
+        reports, plots, and diagnostics to produce).}
+    \label{fig:quickstart_analysis_pipeline}
+\end{figure}
+
+If the initial parameter guess is too far from the global minimum,
+click \app{Find Parameters} on the \app{Fitter} block. The
+Auto-Fitter runs a multi-start parallel \code{leastsq} sweep, lets
+you compare candidates against the data, and accepts the chosen
+result back into the model parameters in one undoable step.
+
+\subsection{Running the fit and reading the result}
+
+Click \app{Run Fit} on the \app{Fitter} block. The status bar
+reports progress; on completion \denis{} pushes the fit results to
+the \app{Results} tab.
+
+The \app{Results} tab lists each project in a tree, with one folder
+per iteration holding the fit report (reduced $\chi^2$, Akaike and
+Bayesian information criteria), parameter tables, and the requested
+plots. \app{Edit Plot} opens a dialog for adjusting matplotlib
+styling (line widths, fonts, colours, axis limits); \app{Export}
+saves the plot in PNG, PDF, or SVG. Style adjustments are written
+next to the plot data as a \code{.style.json} so they survive
+re-loading the project.
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.98\textwidth]{fig_quickstart_results_fit.png}
+    \caption{\app{Results} tab after a completed
+        \textsuperscript{209}Bi fit. Left: the project tree, with
+        per-iteration sub-folders containing the fit report,
+        parameters, metadata, and plot data. Right: the selected
+        plot (data, model, residuals in $\sigma$) with the
+        matplotlib navigation toolbar above and \app{Edit Plot} /
+        \app{Export} controls along the bottom (not shown).}
+    \label{fig:quickstart_results_fit}
+\end{figure}
+
+\subsection{Combining isotopes (isotope shifts)}
+
+To compute isotope shifts across multiple analysis projects, switch
+back to the \app{Analysis} tab and open the permanent
+\app{Isotope Shifts} sub-tab. Click \app{Refresh from Projects} to
+populate one row per project, mark one isotope as the reference, then
+click \app{Compute Shifts}. The right-hand pane shows the combined
+plot, the shift table, and a log of how each shift was computed.
+\app{Export Table CSV} writes the shift table to disk and
+\app{Send to Results} pushes the figure to the \app{Results} tab.
+
+\bigskip
+
+The remaining sections of this manual document each tab in detail.

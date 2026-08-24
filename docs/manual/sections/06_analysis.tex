@@ -1,0 +1,292 @@
+\section{Analysis Tab}
+\label{sec:analysis}
+
+The \app{Analysis} tab is where measured data are fitted to a
+hyperfine model. Each fit lives in its own \emph{analysis project}
+sub-tab, and a permanent \app{Isotope Shifts} sub-tab combines the
+fitted centroids across projects into shift tables and plots.
+
+\subsection{Projects and the block pipeline}
+
+\app{+ Create Analysis Project} is a menu with two entries:
+\app{Sample Project} (the standard fit pipeline; the isotopes you
+actually want to measure) and \app{Reference Project} (identical
+pipeline, but its fitted centroids feed the Gaussian-process drift
+correction of Section~\ref{sec:analysis_gp} instead of the shift
+table). Right-click a project tab to convert between the two kinds,
+rename, or close it. A project chains four kinds of block, drawn
+left-to-right with a colour-coded border:
+
+\begin{description}
+    \item[\app{Source} (blue).] Loads the run files, applies gates,
+        and bins to voltage or rest-frame frequency.
+    \item[\app{Model} (green).] Defines a satlas2 model
+        (one HFS per isotope or isomer, plus optional sidepeaks and
+        background/auxiliary models).
+    \item[\app{Fitter} (orange).] Picks the optimiser, statistic,
+        sharing, constraints, and runs the fit.
+    \item[\app{Output} (purple).] Selects which reports, plots, and
+        diagnostics are produced and pushed to the \app{Results} tab.
+\end{description}
+
+\app{+ Add Block} inserts a new block of any type; the hamburger
+handle on each block re-orders them by drag, the title checkbox
+disables a block, and dragging a block's right edge resizes it.
+
+\subsection{Source block}
+
+The \app{Files} list at the top of the source block holds the run
+files attached to this source. \app{+ Add Files} opens an
+ASDF/\code{.vasdf} file picker; \app{Import from Pre-Analysis} copies
+the ticked files, physics parameters, gates, and cooler/laser
+overrides from a pre-analysis project in one step;
+\app{Merge Selected} produces a synthetic merged entry analogous to
+the merge in the \app{Pre-Analysis} tab.
+
+\app{Physics Parameters} ($Z$, $A$, mass, harmonic, lower / upper
+levels) feed the per-run rest-frame conversion. The mass field shows
+the AME-table value; tick \app{Override} to enter a custom value.
+
+\app{Gates} are the standard set: TOF window in microseconds, PMT
+channel mask plus an optional DC channel, lab-frame voltage gate,
+rest-frame frequency gate (always entered in MHz), and a noise-filter
+threshold (maximum events per timestamp; 0 disables).
+
+\paragraph{Binning.}
+\app{Bin mode} chooses the spectrum domain --- \app{Frequency} (rest
+frame) or \app{Raw Voltage} (lab frame, one bin per unique DAC
+value). In frequency mode, \app{Bin definition} selects how the axis
+is cut: \app{Per scan step} (the default --- one bin per native
+voltage step, Doppler-projected; structurally immune to
+uniform-grid aliasing), \app{Auto} (clstools' uniform grid at
+roughly one bin per step --- can alias against the step spacing,
+producing doubled-count spikes), \app{Fixed bin count}, or
+\app{Fixed bin width [MHz]}. \app{Bin multiple} groups $N$ adjacent
+native steps into one bin (per-step and raw-voltage binning). The
+y-error model (\app{Poisson $\sqrt{y+1}$} default, with an exact
+Poisson interval substituted below 10 counts), the x-column, and an
+optional x-error from the per-step voltage spread complete the
+policy.
+
+Right-clicking a run row offers per-file \emph{binning overrides}
+(freeze different binning for one run only, copy an override to the
+checked runs, show the effective config), the binning diagnostics,
+\app{Filter scans\dots}, and \app{Calibration\dots} --- the same
+scan-filter and calibration machinery as Pre-Analysis
+(Sections~\ref{sec:pa_scanfilter}, \ref{sec:pa_calibration}), backed
+by the same shared registries.
+
+\paragraph{Binning dialog.}
+The \app{Binning} button opens a three-tab health check of the actual
+binning for every checked file. \app{Summary} is a per-run table with
+occupancy columns (empty bins with a scan-gap-aware denominator,
+median and total counts). \app{Run detail} shows one run's spectrum
+with its bin edges, an optional raw-event rug, a warning strip
+(fallbacks, width mismatches, empty-bin and aliasing flags), and a
+scale strip reporting the raw-voltage bin size, the measured
+1~V~$\approx$~$N$~MHz conversion from the run's own events, and the
+equivalent rest-frame bin width. \app{Compare} re-bins all runs onto
+one grid and shows them as a heatmap.
+
+\subsection{Model block}
+
+A \app{Model} block builds one satlas2 model. \app{Type} offers
+\app{HFS} (default), \app{Voigt}, \app{Skewed Voigt},
+\app{Exponential Decay}, \app{Piecewise Constant}, and
+\app{Polynomial} --- combine an HFS model with a Polynomial on the
+same source for a sloping background. To seed parameters from the
+trial overlay used in pre-analysis, click
+\app{Import from Pre-Analysis}; \app{Retrieve Last Fit} re-imports
+the most recent fit values to refine on top of them.
+
+\paragraph{HFS settings.}
+The HFS lineshape is a Voigt profile (the satlas2 version in use
+supports only Voigt for HFS; use the dedicated \app{Skewed Voigt}
+model type for asymmetric single peaks). Tick \app{Racah} (default)
+to constrain peak amplitudes to their angular-momentum ratios;
+untick it and use the per-component editor under
+\app{Show Peak Amplitudes} when peaks deviate from Racah ratios ---
+e.g.\ optical-pumping effects. \app{Sidepeaks} adds $N$
+charge-exchange satellites at a fixed \app{Offset}, optionally with
+Poisson-distributed amplitudes.
+
+\paragraph{Parameters.}
+The parameter table has five columns: \app{Parameter}, \app{Value},
+\app{Bounds} (min, max), \app{Mode}, and \app{Expression}. There is
+no separate vary checkbox --- the \app{Mode} combo is the single
+source of truth:
+
+\begin{description}
+    \item[\app{Free}.] Floats during the fit (the only varying mode).
+    \item[\app{Fixed}.] Held at its value. ($I$, $J_l$, $J_u$ are
+        always fixed --- they are physics, not fit parameters.)
+    \item[\app{Equal} / \app{Ratio} / \app{Offset}.] Tie the
+        parameter to another via an auto-generated expression.
+    \item[\app{Custom}.] A free-form expression typed in the
+        \app{Expression} cell, validated live (red tint on errors)
+        and again in a blocking pre-fit check that catches unknown
+        names, self-references, and dependency cycles.
+\end{description}
+
+Model-block expressions use bare local names (\code{Al},
+\code{centroid}, \dots) and are lowered to one full
+\code{Run\_<id>\_\_\_<Model>\_\_\_<param>} name per source at fit
+time; the Fitter block's \app{Advanced Constraints} use the full
+names directly.
+
+\subsection{Fitter block}
+
+\app{Fit Mode} chooses how sources combine:
+
+\begin{description}
+    \item[\app{Separate (per file)}] (default). One independent fit
+        per run, in parallel across worker processes; each run gets
+        its own parameter copy.
+    \item[\app{Simultaneous}.] One satlas2 fitter over all runs, and
+        the \app{Parameter Sharing}, \app{Advanced Constraints}, and
+        \app{Common Grid} groups appear. Sharing is \emph{opt-in}:
+        tick a bare parameter and choose \app{Model} (share across
+        same-named models) or \app{All} (share across every source).
+        A \app{Common Grid} option re-bins all sources onto one
+        shared x grid (width user-set or auto).
+\end{description}
+
+\app{Method} selects the optimiser (\code{leastsq},
+\code{least\_squares}, \code{slsqp}, \code{cobyla}, \code{nelder},
+\code{powell}, or the MCMC sampler \code{emcee}). \app{Statistics}
+selects the objective: \app{Chi-square}, \app{Gaussian LLH}, or
+\app{Poisson LLH} (recommended at low counts). \app{Scale
+covariance} (off by default) multiplies parameter errors by
+$\sqrt{\chi^2_{\mathrm{red}}}$; it is forced off for likelihood
+fits.
+
+\app{Show Priors} reveals a Gaussian-prior table (full parameter
+names; each prior adds a penalty term) and \app{MCMC Settings}
+exposes walkers, steps, burn-in, thinning, and auto-convergence ---
+both take effect in \app{Simultaneous} mode (priors and advanced
+constraints are ignored, with a pre-fit warning, in Separate mode).
+
+\app{Run Fit} executes; the progress bar blends per-run completion
+with in-run iteration progress. \app{Stop} cancels cooperatively;
+\app{Revert} restores the model parameters to their pre-fit
+snapshot. \app{Find Parameters} opens the Auto-Fitter
+(Section~\ref{sec:autofitter}).
+
+\subsection{Output block}
+
+\app{Reports} produces the text fit report (with the correlation
+matrix above a \app{min} threshold), plus \app{Parameters CSV} and
+\app{Metadata CSV}. \app{Fit Plots} controls per-run figures:
+\app{Individual fit plots}, optional \app{ToF plots} (ToF only /
+ToF + spectrum / ToF + spectrum + fit), the \app{Residual panel},
+\app{Hide zero-count bins}, \app{Component overlay} with
+per-component checkboxes, and \app{Fit values on plot} --- an
+on-plot values box (``Name = value $\pm$ err'') fed by a
+per-parameter picker tree, re-rendered verbatim by the Results tab.
+The \app{Plot Options\dots} button opens the per-plot-type styling
+dialog (global rcParams, fit-plot shade-under-fit and values-box
+size, tracker/walk/correlation/$\chi^2$-map styles, and the
+isotope-shift plot).
+
+\app{Tracker Plots} (Separate mode) plots chosen parameters against
+\app{Run number} or \app{Start time}. \app{Diagnostics} adds the
+$\chi^2$ map (any method) and, for \code{emcee}, correlation / walk
+plots and confidence bands. \app{Iteration} numbers the output
+folder (\app{Auto} increments \code{iter\_001},~\dots; \app{Manual}
+uses a custom label).
+
+\paragraph{Update iteration.}
+The \app{Update iteration} button regenerates the \emph{last} fit's
+iteration folder with the current output toggles, \emph{without}
+re-running the fit --- useful when you realise a plot was left
+unticked. Newly-ticked walk/correlation plots are rebuilt from the
+saved MCMC chains; only the $\chi^2$ map and confidence bands need a
+true re-run (the dialog says so rather than failing silently).
+
+Results are written to
+\code{<output\_root>/analysis/<project>/iter\_NNN/} --- the config
+snapshot, report, CSVs (including a per-run binning summary and any
+binning warnings), \code{plots/} with \code{.npz} sidecars for live
+re-rendering, \code{tracking/}, \code{diagnostics/}, and
+\code{chains/} for MCMC --- and forwarded to the \app{Results} tab.
+
+\subsection{Auto-Fitter}
+\label{sec:autofitter}
+
+\app{Find Parameters} on the \app{Fitter} block opens the
+Auto-Fitter. It runs a multi-start parallel \code{leastsq} sweep ---
+\app{Starts} Gaussian perturbations of the current parameters (width
+set by \app{Spread}; the first start is always the unperturbed
+guess), each fitted in a worker process --- and ranks the results by
+$\chi^2$ in a live table with a fit preview. \app{Refine} re-seeds a
+new round around the selected result with the spread halved;
+\app{Accept Selected} writes the chosen parameters back into the
+Model blocks as one undoable step. The Auto-Fitter only seeds
+initial guesses --- run the real fit afterwards. Fixed and
+expression-tied parameters are never perturbed, and in simultaneous
+mode the sweep respects the Fitter block's parameter sharing.
+
+\subsection{Isotope Shifts sub-tab}
+
+The permanent \app{Isotope Shifts} sub-tab combines fitted centroids
+across sample projects into shift tables and a comparison plot. The
+left panel holds a \app{Setup} tab and the
+\app{Reference Correction (GP)} tab
+(Section~\ref{sec:analysis_gp}); the right panel holds \app{Plot},
+\app{Table}, and \app{Log}.
+
+\app{Refresh from Projects} populates one row per sample project
+with its label, mass number, run selection (\app{Weighted Average}
+--- inverse-variance with Birge inflation when runs scatter --- or a
+single run), centroid, and statistical error; the \app{Ref} radio
+marks the reference isotope. A collapsible \app{Run preview} panel
+under the table shows the highlighted run's spectrum, fit curve, and
+reduced $\chi^2$. \app{Systematic Error} is either one manual MHz
+value or an auto-estimate from the run-to-run jitter of cooler
+voltage and laser setpoint (via the Doppler sensitivity).
+
+\app{Compute Shifts} produces the plot and a 14-column table that
+splits every uncertainty into its budget: per-isotope
+$\sigma_{\mathrm{fit}}$ / $\sigma_{\mathrm{scatter}}$ /
+$\sigma_{\mathrm{corr}}$ (from the GP) / $\sigma_{\mathrm{volt}}$,
+and per-shift statistical, scatter, correction, systematic, and
+total components. When two isotopes share the same GP corrector,
+the correlated part of the correction cancels in the shift and the
+cross-covariance is subtracted. $\delta\nu$ arrows are labelled in
+the compact \code{value(err)~MHz} form. \app{Plot Options\dots}
+configures layout (stacked / overlaid), content, x-axis, centroid
+and reference lines, arrows, boxed labels, and colours.
+\app{Send to Results} writes the study (CSV + log + live plot) to an
+\code{IS\_<study>} iteration and forwards it to the \app{Results}
+tab; \app{Export Table CSV} writes the table alone.
+
+\subsection{Reference correction (Gaussian process)}
+\label{sec:analysis_gp}
+
+Slow drifts of the wavemeter or laser lock move every centroid
+measured over a campaign. \denis{} implements the time-dependent
+reference-centroid correction of van den Borne
+(2025)~\cite{vandenborne2025}: fit the reference isotope's scans in
+one or more \app{Reference Projects}, then, on the
+\app{Reference Correction (GP)} tab, pick a kernel
+(\app{RBF~+~WhiteNoise}, \app{Matérn(5/2)~+~WhiteNoise}, or the
+composite thesis kernel with a periodic day/night term) and click
+\app{Fit GP}. Each fitted reference centroid becomes one training
+observation $(t, \mathrm{centroid}, \sigma)$; the diagnostic plot
+shows the scatter, the MAP curve, and $1\sigma$/$2\sigma$ bands
+(optionally with an MCMC posterior for diagnostics --- prediction
+always uses the MAP point; PyMC~v5 is required).
+
+\app{Compute per-file corrections} then fills a table with one row
+per sample run: the correction $\mu_{\mathrm{GP}}(t)$, its
+$\sigma$, and a $|\mu|/\sigma$ significance colouring. Each row's
+\app{Mode} is \app{Auto} (use the GP), \app{Manual} (type a value),
+or \app{Off}; the global \app{Apply correction at fit time} checkbox
+gates the whole mechanism. Corrections are subtracted from the
+binned MHz axis after the Doppler transform --- consistently in the
+fit pipeline, the merge dialog, and the Auto-Fitter --- and the
+propagated correction uncertainty (including the GP cross-covariance
+between runs) feeds the $\sigma_{\mathrm{corr}}$ columns of the
+shift table. The trained GP and the table round-trip through the
+save file; corrections saved without their GP are dropped on load
+with a prompt to re-fit.

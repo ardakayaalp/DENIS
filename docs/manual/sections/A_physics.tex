@@ -1,0 +1,97 @@
+\section{Physics reference}
+\label{sec:physics}
+
+This appendix collects the formulae implemented in the
+\code{cls\_estimations/} backend and used throughout the workflow. It
+is intentionally compact; for derivations and detailed discussion,
+see SATLAS2~\cite{satlas2} and the CLS handbook
+chapter~\cite{cls_handbook}.
+
+\subsection{Doppler shift}
+
+For an ion accelerated through a potential difference $V$ with
+charge state $q$ and rest mass $m$, the relativistic Lorentz factor
+is
+\begin{equation}
+    \gamma = 1 + \frac{qV}{m c^{2}}, \qquad
+    \beta = \sqrt{1 - \gamma^{-2}}.
+\end{equation}
+The lab-frame laser frequency $\nu_\text{lab}$ relates to the
+frequency seen by the ion in its rest frame, $\nu_\text{rest}$, by
+\begin{equation}
+    \nu_\text{rest} = \gamma\,\nu_\text{lab}\,(1 - \beta\,\hat{n} \cdot \hat{k})
+                    = \gamma\,\nu_\text{lab}\,(1 \mp \beta),
+    \label{eq:doppler}
+\end{equation}
+where the upper (lower) sign in the right-most expression
+corresponds to anti-collinear (collinear) geometry. Equation
+\eqref{eq:doppler} is what \denis{} inverts when the user specifies a
+target lab-frame voltage offset \app{dV} from $V_0$ for a chosen
+isotope --- the laser frequency $\nu_\text{lab}$ is back-solved so
+that the desired rest-frame centroid sits at $V = V_0 - \mathrm{dV}$.
+
+\subsection{Hyperfine structure}
+
+For a level with electronic angular momentum $J$ and nuclear spin
+$I$, the total angular momentum $F = I + J$ takes values
+$|I-J|, |I-J|+1, \dots, I+J$. The hyperfine energy of the substate
+$F$ is
+\begin{equation}
+    \Delta E_F = \frac{A}{2}\, C
+    + B\,\frac{\frac{3}{2}\,C(C+1) - 2I(I+1)\,J(J+1)}
+                {2 I (2I-1)\,J(2J-1)},
+    \label{eq:hfs}
+\end{equation}
+with
+\begin{equation}
+    C = F(F+1) - I(I+1) - J(J+1).
+\end{equation}
+$A$ is the magnetic-dipole coupling constant and $B$ the
+electric-quadrupole coupling constant; the second term in
+\eqref{eq:hfs} vanishes when $I < 1$ or $J < 1$. \denis{} uses
+\eqref{eq:hfs} for both lower and upper electronic states; the
+observed transition frequencies are differences between the two.
+Selection rules are $\Delta F = 0, \pm 1$ with $F = 0 \to F = 0$
+forbidden.
+
+\subsection{Schmidt magnetic moments}
+
+For a single odd nucleon in an orbital with quantum numbers
+$\ell, j$ the Schmidt prediction is
+\begin{equation}
+    \mu = j\,g_j\,\mu_N, \qquad
+    g_j = \begin{cases}
+        g_\ell + (g_s - g_\ell)/(2\ell+1), & j = \ell + 1/2 \\
+        g_\ell - (g_s - g_\ell)\,\dfrac{j+1}{2j+1}, & j = \ell - 1/2,
+    \end{cases}
+\end{equation}
+with bare-nucleon $g$-factors $g_\ell^{(p)} = 1$, $g_\ell^{(n)} = 0$,
+$g_s^{(p)} = +5.586$, $g_s^{(n)} = -3.826$. The optional $g_s$
+quenching factor in the calculator multiplies the spin $g$-factor to
+account for in-medium effects. The two-particle case couples the
+two single-particle moments through the Lande formula at a chosen
+total spin $I$.
+
+\subsection{Fit objectives}
+
+The \app{Fitter} block exposes three statistics:
+
+\begin{description}
+    \item[Chi-square.]
+        $\chi^2 = \sum_i \left(\frac{y_i - m_i(\theta)}{\sigma_i}\right)^2$,
+        with $\sigma_i$ taken from the \app{yerr} model
+        ($\sqrt{y_i}$, $\sqrt{y_i+1}$, or model-based). Suitable for
+        bins with at least $\sim 10$ counts.
+    \item[Poisson LLH.]
+        $-2 \ln L = 2 \sum_i \big[m_i(\theta) - y_i + y_i \ln(y_i/m_i(\theta))\big]$
+        for $y_i > 0$. Use this when the per-bin counts are low and
+        the Gaussian approximation breaks down.
+    \item[Gaussian LLH.]
+        Same kernel as $\chi^2$ but with $\sigma_i$ allowed to depend
+        on the model. Useful when the noise model is heteroskedastic.
+\end{description}
+
+\app{Scale covariance} on the \app{Fitter} block multiplies the
+post-fit covariance matrix by the reduced $\chi^2$, recovering the
+standard errors when the input $\sigma_i$ are known to be
+mis-scaled.

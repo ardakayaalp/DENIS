@@ -1,0 +1,129 @@
+\section{Installation}
+\label{sec:installation}
+
+\denis{} runs on Windows, macOS, and Linux. The recommended install
+flow uses \href{https://docs.astral.sh/uv/}{\code{uv}} (a fast Python
+package and project manager from Astral) to manage Python itself, the
+project virtual environment, and all dependencies in one step. No
+existing Python installation is required: \code{uv} downloads a
+compatible interpreter on first sync.
+
+\subsection{Recommended: scripted install}
+
+After cloning the repository, open a terminal in the project root and
+run the platform-specific install script.
+
+\begin{lstlisting}
+# Windows (cmd or PowerShell)
+install.bat
+
+# Linux / macOS
+./install.sh
+\end{lstlisting}
+
+The script:
+\begin{enumerate}
+    \item Checks whether \code{uv} is on \code{PATH}; if not, prompts to
+        install it via the official Astral installer.
+    \item Runs \code{uv sync}, which downloads a compatible Python
+        interpreter (if needed), creates \code{.venv/} in the project
+        root, and installs every dependency pinned in
+        \code{uv.lock}.
+    \item Creates a desktop shortcut (also available on its own via
+        \code{install.bat shortcut} / \code{./install.sh shortcut}):
+        a Windows \code{.lnk} pointing at
+        \code{.venv\textbackslash Scripts\textbackslash pythonw.exe},
+        a Linux \code{.desktop} entry, or a clickable
+        \code{.command} on macOS.
+\end{enumerate}
+
+When the script finishes, double-click the desktop shortcut
+(Figure~\ref{fig:installation_shortcut}) to launch \denis{}, or run
+from the terminal:
+
+\begin{lstlisting}
+uv run python gui.py
+\end{lstlisting}
+
+The first launch opens a splash screen, then the main window with the
+four tabs introduced in Section~\ref{sec:introduction}.
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=2.4cm]{fig_installation_shortcut.png}
+    \caption{The \code{DENIS} desktop shortcut created on Windows by
+        the installer. The Linux \code{.desktop} entry
+        and macOS \code{.command} launcher use the same icon.}
+    \label{fig:installation_shortcut}
+\end{figure}
+
+\subsection{Manual install}
+
+If \code{uv} is already installed and the wrapper scripts are not
+needed:
+
+\begin{lstlisting}
+git clone https://github.com/ardakayaalp/DENIS.git
+cd DENIS
+uv sync
+uv run python gui.py
+\end{lstlisting}
+
+The \code{clstools}~\cite{clstools} dependency is not published on
+PyPI and is fetched from GitHub via the \code{[tool.uv.sources]}
+block in \code{pyproject.toml}. \code{uv sync} handles this
+automatically; no manual step is needed.
+
+\subsection{Editor / IDE integration}
+
+For VSCode or PyCharm, point the project Python interpreter at the
+\code{uv}-managed environment so debugging and linting use the same
+packages as the running app:
+
+\begin{itemize}
+    \item Windows: \code{.venv\textbackslash Scripts\textbackslash python.exe}
+    \item Linux / macOS: \code{.venv/bin/python}
+\end{itemize}
+
+\subsection{Updating}
+
+To pull a newer version of \denis{} and refresh dependencies:
+
+\begin{lstlisting}
+git pull
+uv sync
+\end{lstlisting}
+
+\code{uv sync} reads \code{uv.lock} and brings the local environment
+to exactly that pinned set --- adding, removing, and upgrading
+packages as required.
+
+\subsection{Troubleshooting}
+
+\begin{description}
+    \item[\code{uv} installed but not found.]
+        The Astral installer drops \code{uv} into
+        \code{\textasciitilde/.local/bin} (Linux/macOS) or
+        \code{\%USERPROFILE\%\textbackslash .local\textbackslash bin}
+        (Windows). Open a new terminal so the updated \code{PATH}
+        takes effect, or add the directory to \code{PATH} manually.
+    \item[\code{clstools} fetch fails.]
+        \code{uv sync} clones \code{cls\_tools} from GitHub. A
+        failure usually means the machine has no GitHub access. Clone
+        the repository to a sibling folder manually and replace the
+        entry in \code{[tool.uv.sources]} with a local path:
+\begin{lstlisting}
+[tool.uv.sources]
+clstools = { path = "../cls_tools" }
+\end{lstlisting}
+    \item[Desktop shortcut opens a console on Windows.]
+        \code{create\_shortcut.bat} prefers
+        \code{.venv\textbackslash Scripts\textbackslash pythonw.exe};
+        if it falls back to \code{python.exe}, \code{pythonw.exe} is
+        missing from the environment. Re-run \code{uv sync} to repair.
+    \item[macOS \code{.command} launcher will not open.]
+        macOS may quarantine downloaded scripts. Right-click the
+        \code{DENIS.command} file, choose \app{Open}, and allow
+        execution at the Gatekeeper prompt; or grant execute
+        permission with \code{chmod +x \textasciitilde/Desktop/DENIS.command}.
+\end{description}

@@ -1,0 +1,190 @@
+\section{Tools Menu}
+\label{sec:tools}
+
+The \menu{Tools} menu collects supporting calculators that are useful
+during CLS planning and analysis but do not belong to the main
+four-tab workflow. Each tool opens in its own window and stays open
+across tab switches, so values can be cross-checked while editing the
+\app{Estimate} or \app{Pre-Analysis} forms.
+
+\subsection{Schmidt Moment Calculator}
+
+\menu{Tools $\rightarrow$ Schmidt Moment Calculator} computes
+single-particle and two-particle Schmidt magnetic moments
+(Figure~\ref{fig:tools_schmidt}). Choose \app{Single particle} for
+odd-mass nuclei and supply the unpaired nucleon's type
+(\code{p}/\code{n}) and orbital
+(\code{1s1/2}, \code{1p3/2}, \dots, \code{1f7/2}, etc.); choose
+\app{Two particles} for odd-odd nuclei and supply two orbital
+configurations together with the resulting coupled spin $I$. The
+\app{$g_s$ quenching factor} (default 1.0) lets the user apply a
+literature quenching to the bare-nucleon spin $g$-factor. The result
+is the predicted $\mu$ in nuclear magnetons, the corresponding
+$g$-factor, and a one-line description of the configuration that is
+also written into the Estimate log when Schmidt moments are used
+there (Section~\ref{sec:estimate}).
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.55\textwidth]{fig_tools_schmidt.png}
+    \caption{Schmidt Moment Calculator with a proton in the
+        $1s_{1/2}$ orbital --- the bare-nucleon prediction for a
+        single odd proton.}
+    \label{fig:tools_schmidt}
+\end{figure}
+
+\subsection{Shell Configuration Plotter}
+
+\menu{Tools $\rightarrow$ Shell Configuration Plotter} draws the
+nucleon shell-filling diagram for any nucleus
+(Figure~\ref{fig:tools_shell}). Enter $Z$ and $N$ in the top-left
+panel; the element symbol and mass number are derived automatically.
+The plot shows protons (red, left) and neutrons (blue, right)
+placed into spherical shell-model ($jj$-coupling) orbitals --- not a
+deformed Nilsson diagram --- with magic-number gaps marked between
+shells. The \app{Shell Model Results} block below the inputs
+prints the resulting proton and neutron configuration strings and
+the predicted ground-state $J^{\pi}$ from the Nordheim coupling
+rule. \app{Plot Options} controls the depth of the shell ladder
+shown (\app{From shell} / \app{To shell}), labels, vacancy markers,
+$n$-quantum numbers, and circle size.
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.95\textwidth]{fig_tools_shell.png}
+    \caption{Shell Configuration Plotter for \textsuperscript{72}Ge
+        ($Z=32$, $N=40$). Both proton and neutron shells are filled
+        through the $1f_{5/2}$ orbital; the predicted $J^{\pi}$ is
+        $0^+$ as expected for an even-even nucleus.}
+    \label{fig:tools_shell}
+\end{figure}
+
+\subsection{Unit Converter}
+
+\menu{Tools $\rightarrow$ Unit Converter} converts a
+laser-spectroscopy quantity into every other unit it is likely to be
+expressed in (Figure~\ref{fig:tools_unit_converter}). Enter a value
+and pick the input unit (nm, cm$^{-1}$, MHz, GHz, THz, eV); the
+converted values appear immediately in all six units. Useful when
+toggling between the laser-control software (often nm), satlas2
+parameters (MHz), and published transition tables (cm$^{-1}$).
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.45\textwidth]{fig_tools_unit_converter.png}
+    \caption{Unit Converter showing the second-harmonic of an
+        Nd:YAG laser ($532$~nm) expressed in every supported unit.}
+    \label{fig:tools_unit_converter}
+\end{figure}
+
+\subsection{SHG Crystal Angle Calculator}
+
+\menu{Tools $\rightarrow$ SHG Crystal Angle Calculator} computes the
+Type-I (o+o $\rightarrow$ e) phase-matching angle for second-harmonic
+generation in nonlinear crystals, from Sellmeier dispersion
+(Figure~\ref{fig:tools_shg}). Pick the crystal (\app{BBO},
+\app{KDP}, \app{LBO}) and the calculation direction ---
+\app{Wavelength $\rightarrow$ Angle} for typical use, or
+\app{Angle $\rightarrow$ Wavelength} for diagnostics on a fixed
+crystal mount. The result reports the phase-matching angle (or the
+matched fundamental) and the SHG wavelength; if the crystal cannot
+phase-match the requested line the result reads \app{No phase
+matching}. Only Type-I matching is implemented.
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.5\textwidth]{fig_tools_shg.png}
+    \caption{SHG Crystal Angle Calculator: BBO Type-I phase-matching
+        angle ($22.78^{\circ}$) for the second harmonic of 1064~nm.}
+    \label{fig:tools_shg}
+\end{figure}
+
+\subsection{SFG / DFG Calculator}
+
+\menu{Tools $\rightarrow$ SFG / DFG Calculator} combines two input
+wavelengths into a sum-frequency (SFG) or difference-frequency (DFG)
+output. Each input takes its own unit (nm, cm$^{-1}$, MHz, GHz, THz,
+eV), the combination is done in wavenumber space (additive in photon
+energy), and the generated wavelength is reported simultaneously in
+all six units. SHG is simply the SFG special case with two equal
+inputs.
+
+\subsection{Quick Plot}
+
+\menu{Tools $\rightarrow$ Quick Plot} is a lightweight data viewer
+that lives outside the analysis pipeline
+(Figure~\ref{fig:tools_quick_plot}). The \app{Load File} tab opens a
+delimited file (auto-detected or explicit delimiter) and lists its
+columns; \app{Enter Data} is a built-in spreadsheet that also accepts
+pasted tab/comma/semicolon/whitespace-separated data. Pick \app{X}
+and \app{Y} columns from the drop-downs, choose a chart type
+(\app{Line}, \app{Scatter}, \app{Step}, or \app{Bar}), and click
+\app{Plot}. Title, axis labels, grid and legend toggles, and a CSV /
+TSV save round out the tool; the standard matplotlib toolbar provides
+pan, zoom, and image export --- useful for sanity-checking
+calibration files, ion-source trends, or any tabular data adjacent to
+a CLS measurement.
+
+\subsection{NIST ASD Browser}
+
+\menu{Tools $\rightarrow$ NIST ASD Browser\dots} is a full in-app
+browser for the NIST Atomic Spectra Database, plus a multi-step
+laser excitation \emph{scheme finder}. Enter a spectrum in NIST
+notation (e.g.\ \code{Si I}, \code{Ca II}) and click \app{Fetch}:
+data is loaded from a local cache when present, otherwise downloaded
+once from NIST and cached under \code{settings/nist\_cache}, so
+subsequent sessions work offline. NIST data is fetched in vacuum;
+the \app{Air}/\app{Vacuum} toggle converts locally with the standard
+NIST dispersion formula.
+
+\begin{description}
+    \item[\app{Levels} tab.] Filterable level table (configuration,
+        term, energy window, \app{Metastables only}) with three plot
+        views: a Grotrian-style \app{Level diagram} (one column per
+        configuration; bar opacity encodes the radiative lifetime
+        $\tau = 1/\Sigma A_{ki}$, and hovering a level shows its
+        energy, uncertainty, configuration/term/$J$, and $\tau$),
+        \app{Decay channels} of the selected level (one arrow per
+        channel with $\lambda$ and branching ratio --- pick your
+        detection channel here), and \app{Lifetimes vs energy}
+        (metastable candidates jump out). \app{Add as starting
+        level} sends the selected level to the Scheme Finder.
+    \item[\app{Lines} tab.] Filterable transition table
+        ($\lambda$ range, minimum $A_{ki}$, allowed / forbidden,
+        involves-level) with a \app{Stick spectrum}
+        ($\lambda$ vs $\log_{10} A_{ki}$) and a \app{Line density}
+        histogram (spectral congestion at a glance), plus manual
+        axis-limit controls.
+    \item[\app{Scheme Finder} tab.] Searches 1--3-step excitation
+        schemes from chosen (or auto-discovered ground + metastable)
+        starting levels. Lasers are either named systems with a
+        centre $\pm$ range and a role (\app{PUMP} / \app{PROBE} /
+        \app{ANY}; each used at most once per scheme) or one broad
+        wavelength window. Cuts on per-role $A_{ki}$, the minimum
+        branching ratio of the watched fluorescence channel
+        (denominator = all decay channels of the final level), a
+        same/different-wavelength detection constraint, a probe
+        orbital filter, and optional isobaric-contaminant checks
+        (an issue is flagged when a scheme laser can excite the
+        isobar \emph{and} the isobar fluoresces near the detection
+        wavelength). Results are scored
+        ($\log_{10}$ weight $+ \sum \log_{10} A_{ki} +
+        \log_{10}\mathrm{BR} - 5$ per contamination issue), deduped
+        by physical pathway, and ranked; selecting a row draws the
+        excitation/detection diagram and a full text description,
+        and \app{Export results CSV\dots} writes the ranked list.
+\end{description}
+
+The browser's state --- spectrum, filters, search configuration, and
+the ranked schemes (self-contained, so they restore offline) ---
+persists in the \denis{} save file under the \code{nist\_asd} key.
+
+\begin{figure}[hbtp]
+    \centering
+    \includegraphics[width=0.95\textwidth]{fig_tools_quick_plot.png}
+    \caption{Quick Plot showing an ion-source mass-scan calibration
+        loaded from CSV: ion current as a function of mass setting,
+        with the sample isotopes appearing as well-resolved peaks
+        near $A = 28$ and $A = 32$.}
+    \label{fig:tools_quick_plot}
+\end{figure}

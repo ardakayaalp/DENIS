@@ -1,0 +1,82 @@
+\section{Results Tab}
+\label{sec:results}
+
+The \app{Results} tab is a viewer for everything produced by the
+\app{Analysis} tab: fit reports, parameter tables, metadata, and the
+plots requested in each project's \app{Output} block.
+
+The left pane (Figure~\ref{fig:quickstart_results_fit}) is a tree
+keyed by analysis-project name. Each project node expands into one
+sub-folder per iteration of \app{Run Fit} (e.g.\ \code{iter\_001},
+\code{iter\_002}, \dots), and each iteration contains the artefacts
+written for that run: \app{Fit Report}, \app{Parameters},
+\app{Metadata}, the binning summary and warnings, the saved plots,
+and free-text \app{Notes} nodes at both project and iteration level
+(autosaved as you type). A freshly finished iteration is highlighted
+in amber with a \app{(NEW)} marker until you open it. Selecting a
+leaf shows it in the right pane --- a matplotlib canvas for plots, a
+table for CSVs, a read-only text view for reports.
+
+Iterations arrive three ways: automatically when a fit finishes,
+restored from the save file on load (exactly the iterations the
+session recorded --- missing folders are reported, nothing else is
+pulled in), or via \app{Refresh All} / \app{Refresh Project}, which
+re-scan the output directory for results produced outside the
+session.
+
+Plots saved by \denis{} include their underlying data as a
+\code{.npz} sidecar, so the canvas is a \emph{live} matplotlib
+figure rather than a flat image --- fit plots (with residual panel,
+component overlays, and the fit-values box), ToF plots, trackers,
+MCMC walk / correlation plots, $\chi^2$ maps, and isotope-shift
+comparisons all re-render from data. Use the matplotlib toolbar to
+pan and zoom, and \app{Edit Plot} (or right-click the canvas
+$\rightarrow$ \app{Edit plot\dots}) to open the style editor.
+
+\subsection{The plot editor}
+
+The editor is modeless and applies live. Six tabs cover the figure
+(size, DPI, margins), the axes (title and labels with real font
+pickers, sizes, limits, linear/log scales, tick density, grid), the
+artists (per-artist colour, width, style, marker, alpha, position /
+rotation / z-order, font family + bold/italic for text, and a
+\app{Remove artist} button), an \app{Add} tab (text, annotations
+with arrows, vertical / horizontal lines and spans --- placed by
+coordinates or by clicking the plot), the legend, and export.
+\code{Ctrl+Z} / \code{Ctrl+Y} undo and redo edits inside the editor.
+\app{Click to select / drag on plot} lets you pick artists by
+clicking and drag text labels and annotation arrows into place.
+
+Closing the editor on a live \code{.npz} plot writes a
+\code{.style.json} next to the plot data; on the next render the
+style is re-applied automatically, so the figure re-opens the way
+you left it (deleted tagged annotations stay deleted). Right-click a
+plot row to \app{Copy plot style} and \app{Paste plot style} onto
+other plots --- a checklist picks which property groups travel
+(figure size, title/label text, font sizes, limits, grid, label
+positions, artist styles, annotations), and a bulk entry pastes to
+every checked plot at once.
+
+\subsection{Exporting}
+
+\app{Export} writes the active plot in PNG, PDF, or SVG at 300~dpi
+with the current styling baked in (text and CSV items are copied as
+files). \app{Export All} copies the entire selected iteration
+directory --- reports, CSVs, plots, \code{.npz} data and
+\code{.style.json} sidecars --- verbatim to a destination folder.
+Right-click a plot row and choose \app{Export data as CSV\dots} to
+write the plot's underlying arrays (data, errors, model, residuals,
+dense fit curve) with column selection, an optional header row, a
+delimiter choice, and a precision setting.
+
+\subsection{Refresh, collapse, and deletion}
+
+\app{Refresh All} re-reads the whole output directory (including
+projects not open in the Analysis tab); \app{Refresh Project} does
+the same for the active project only; \app{Collapse All} folds the
+tree. Deletion is available two ways and \emph{removes directories
+from disk}: right-click a project or iteration row for a confirmed
+\app{Delete\dots}, or tick checkboxes on any number of projects /
+iterations and press \app{Remove Selected} for a batch delete with a
+single confirmation. Notes are deleted together with their owner;
+there is no undo.

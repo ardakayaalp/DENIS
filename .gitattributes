@@ -1,0 +1,9 @@
+* text=auto
+
+# Shell scripts must stay LF — CRLF breaks /usr/bin/env on Linux/macOS.
+*.sh        text eol=lf
+*.command   text eol=lf
+
+# Windows-only batch files keep CRLF.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf

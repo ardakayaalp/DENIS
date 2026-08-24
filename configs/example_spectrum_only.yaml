@@ -1,0 +1,89 @@
+# CLS Spectrum Viewer - Germanium (spectrum-only mode)
+#
+# No 'statistics' section -> spectrum-only mode:
+#   - No timing calculations performed
+#   - No yield, efficiency, background, or peaks_to_measure needed
+#   - Generates spectrum plots and HFS peak tables only
+#
+# Isotopes: 73Ge (reference), 77Ge (with isomer), 81Ge
+# Transition: 557.1341 -> 37702.3054 cm-1
+
+element: Ge
+Z: 32
+
+transition:
+  lower_level_cm: 557.1341
+  upper_level_cm: 37702.3054
+  J_lower: 1
+  J_upper: 1
+
+laser:
+  setpoint_cm: 37110.774000
+  harmonic: 1
+
+beam:
+  voltage_kV: 29.980
+  charge_state: 1
+  geometry: anti-collinear
+
+linewidth:
+  fwhm_MHz: 100
+
+reference:
+  A: 73
+  I: 4.5
+  mu: -0.87824
+  Q: -0.198
+  A_lower_MHz: 15.5480
+  B_lower_MHz: -54.566
+  A_upper_MHz: -262.2
+  B_upper_MHz: 40.0
+
+scan:
+  voltage_range_V: 100
+  # step_size_V and dwell_time_ms not needed in spectrum-only mode
+
+# No 'statistics' section -- this triggers spectrum-only mode
+
+isotopes:
+  # ===== 73Ge: reference isotope, I=9/2+ =====
+  - A: 73
+    label: "73Ge"
+    I: 4.5
+    mu: -0.87824
+    Q: -0.198
+    isotope_shift_MHz: 0.0
+
+  # ===== 77Ge: I=7/2+ (g.s.) with I=1/2- isomer =====
+  - A: 77
+    label: "77Ge"
+    I: 3.5
+    mu: 0.0
+    Q: 0.0
+    isotope_shift_MHz: 130
+    schmidt_valence:
+      type: neutron
+      orbital: 2p3/2
+    isomer:
+      I: 0.5
+      mu: 0.0
+      Q: 0.0
+      isotope_shift_MHz: 95
+      plot_with_gs: true
+
+  # ===== 81Ge: I=9/2+ (g.s.) with I=1/2+ isomer =====
+  - A: 81
+    label: "81Ge"
+    I: 4.5
+    mu: 0.0
+    Q: 0.0
+    isotope_shift_MHz: 320
+    schmidt_valence:
+      type: neutron
+      orbital: 1g9/2
+    isomer:
+      I: 0.5
+      mu: 0.0
+      Q: 0.0
+      isotope_shift_MHz: 280
+      plot_with_gs: true

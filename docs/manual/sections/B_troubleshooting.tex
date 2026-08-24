@@ -1,0 +1,74 @@
+\section{Troubleshooting}
+\label{sec:troubleshooting}
+
+\begin{description}
+    \item[Shortcut launches but the estimation never finishes.]
+        Earlier versions froze when run from the Windows shortcut
+        because the \code{pythonw.exe} process inherits
+        \code{sys.stdout = None}, and the worker subprocesses crashed
+        in \code{tqdm}. Both the worker thread and the per-run
+        subprocess now redirect a missing \code{stdout}/\code{stderr}
+        to \code{os.devnull} on entry; if you still see hangs from
+        the shortcut, check that you are running a recent enough
+        build and report the issue with the contents of
+        \code{logs/denis\_*.log}.
+    \item[macOS layout looks white / clipped.]
+        Old releases did not pin the Qt style and macOS rendered the
+        UI with the native Aqua style, which centres tabs, paints a
+        white background under the dark-themed accent colours, and
+        clips widgets sized for the Fusion style. Recent releases
+        force \code{app.setStyle("Fusion")} and a custom dark
+        \code{QPalette} in \code{main\_window.py}; if the layout
+        still looks off, raise the UI scale factor under
+        \menu{File $\rightarrow$ Settings $\rightarrow$ General}.
+    \item[\code{clstools} fetch fails on \code{uv sync}.]
+        \code{clstools} is pulled from GitHub. If the host has no
+        GitHub access, clone the repo locally and replace the entry
+        in \code{[tool.uv.sources]} of \code{pyproject.toml} with a
+        local path:
+\begin{lstlisting}
+[tool.uv.sources]
+clstools = { path = "../cls_tools" }
+\end{lstlisting}
+        Then re-run \code{uv sync}.
+    \item[Auto-Fitter never returns.]
+        The Auto-Fitter spawns one worker process per CPU core
+        granted in the \app{Performance} settings (default
+        \code{n\_cores - 2}). If your machine is busy with another
+        job, lower this number. The progress bar in the Auto-Fitter
+        window also surfaces stalled workers --- if a single core
+        sits at $0\,\%$ for several minutes, click \app{Stop}, drop
+        the \app{N starts} value, and restart.
+    \item[Model overlay disappears when switching the Pre-Analysis
+        x-axis to frequency.]
+        The conversion from voltage to rest-frame frequency requires
+        valid laser setpoint, isotope mass, and cooler voltage. If
+        any of these is missing in the source ASDF metadata, the
+        axis silently falls back to MHz with no Doppler offset.
+        Confirm that the \app{Cooler V} and \app{Laser cm$^{-1}$}
+        fields in \app{Plot Options} are non-zero; override them
+        manually if the run file is incomplete.
+    \item[\code{Ctrl+C} / \code{Ctrl+V} / \code{Ctrl+Z} do nothing in
+        a spinbox.]
+        The application installs a global event filter for
+        clipboard and undo shortcuts. If a fresh shortcut still does
+        not respond, restart the application; the filter is attached
+        once during startup and a partial UI build can leave it out
+        of date.
+    \item[Decimal separator is shown as comma instead of dot.]
+        Every numeric spinbox in \denis{} is created with a
+        US-English \code{QLocale}, so the decimal separator is a dot
+        regardless of the operating-system locale. If a field still
+        shows a comma it was created outside the shared helper ---
+        report it as a bug with the field's name.
+    \item[Capturing a crash.]
+        Every session writes a log to
+        \code{logs/denis\_<timestamp>.log} next to the application
+        (a verbatim copy of the terminal output plus a structured
+        log; the newest 20 files are kept). An unhandled exception
+        is written under a clearly delimited \code{CRASH:} banner,
+        and the startup banner records the versions needed for a bug
+        report. Tick \app{Verbose session log} in
+        \menu{File $\rightarrow$ Settings $\rightarrow$ General} and
+        restart to raise the log level to DEBUG.
+\end{description}

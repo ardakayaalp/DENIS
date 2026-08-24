@@ -1,0 +1,71 @@
+element: Co
+Z: 27
+
+transition:
+  lower_level_cm: 3350.494
+  upper_level_cm: 47078.494
+  J_lower: 5
+  J_upper: 6
+
+laser:
+  setpoint_cm: 10920.071952    # fundamental laser wavenumber
+  harmonic: 4                  # multiplier (effective = setpoint * harmonic)
+
+beam:
+  voltage_kV: 29.9
+  charge_state: 1
+  geometry: anti-collinear
+
+linewidth:
+  fwhm_MHz: 100
+
+reference:
+  A: 59
+  I: 3.5
+  mu: 4.627
+  Q: 0.42
+  A_lower_MHz: 1056.8
+  B_lower_MHz: 0.0
+  A_upper_MHz: 333.52
+  B_upper_MHz: 0.0
+
+scan:
+  voltage_range_V: 100
+  step_size_V: 1.0
+  dwell_time_ms: 200
+
+statistics:
+  required_sigma: 3.0
+
+isotopes:
+  - A: 59
+    label: "59Co"
+    I: 3.5
+    mu: 4.627
+    Q: 0.42
+    isotope_shift_MHz: 0.0
+    yield_ions_per_sec: 1.0e6
+    spectroscopic_efficiency: 0.001
+    background_rate_Hz: 10
+    peaks_to_measure: 3
+
+  - A: 54
+    label: "54Co"
+    I: 0
+    mu: 0.0
+    Q: 0.0
+    isotope_shift_MHz: -2135
+    yield_ions_per_sec: 1000
+    spectroscopic_efficiency: 0.001
+    background_rate_Hz: 10
+    peaks_to_measure: 1
+    isomer:
+      I: 7
+      mu: 3.89
+      Q: 0.0
+      isotope_shift_MHz: -2100
+      production_ratio: 0.8      # 80% g.s., 20% isomer
+      peaks_to_measure: 5
+      plot_with_gs: true
+      A_lower_MHz: 370.0
+      A_upper_MHz: 117.0

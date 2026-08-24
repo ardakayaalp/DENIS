@@ -1,0 +1,250 @@
+\section{Pre-Analysis Tab}
+\label{sec:preanalysis}
+
+The \app{Pre-Analysis} tab loads measured data, gates the
+time-of-flight signal, bins the resulting spectrum on either
+acceleration voltage or Doppler-shifted rest-frame frequency, and
+overlays trial HFS models so the operator can read off initial
+parameters before the full fit.
+
+Each pre-analysis is a sub-tab under \app{+ Create Pre-Analysis}; the
+sub-tab name (e.g.\ \app{Rh} in
+Figure~\ref{fig:quickstart_preanalysis}) is shared with the Analysis
+tab when settings are pushed across (Section~\ref{sec:analysis}). The
+layout has two panes: a left column holding the \app{Data Files}
+list, the \app{Plot Options} group, and the \app{HFS Models} panel,
+and a wide centre pane with three plot sub-tabs --- \app{Spectrum},
+\app{Calibrations}, and \app{Cooler Voltage}.
+
+Three view controls sit in the corner of the sub-tab row and apply to
+\emph{every} open pre-analysis project at once: a \app{Layout} combo
+(\app{3 row stacked} = ToF / Spectrum / Timestamp as rows, or
+\app{2 row stacked} = Spectrum and ToF side by side with the
+Timestamp strip below, the original Data Viewer arrangement),
+\app{X} / \app{Y} grid toggles, and a sun-moon button that switches
+the plots to a \emph{dark mode} (black canvas, white chrome, neon
+line colours). All three persist --- the dark state both in the
+global settings and in the project save file.
+
+\subsection{Loading data}
+
+Click \app{Open\dots} to add one or more IGISOL-style ASDF run files;
+\code{clstools}~\cite{clstools} parses each one and a row is added to
+the \app{Data Files} list with a checkbox, an auto-assigned colour,
+and a short header showing the cooler voltage $V$, laser setpoint
+$\lambda$, and (after loading) the run duration. Tick the runs you
+want plotted; the panels redraw immediately. \app{Remove checked}
+drops the ticked rows, and the tri-state \app{Check all} box flips
+every row at once. A circular-arrow button re-reads a still-growing
+run from disk.
+
+Default run colours cycle through the classic Windows~98 palette
+(navy, maroon, green, purple, \dots), chosen for contrast between
+consecutively loaded runs. Every file (and every HFS model) carries
+\emph{two} colours --- one for the light canvas and one for dark
+mode --- edited together in a dual-mode colour dialog (preset
+palettes, hex/\code{R,G,B} entry, and saved custom slots shared
+across the app). Clicking a row's colour swatch opens a small menu
+with the colour dialog, an opacity slider, and a line-style selector.
+
+Right-clicking a run row offers \app{Remove}, \app{Check}/\app{Uncheck},
+\app{Set centroid offset\dots} (a manual MHz shift consumed by
+frequency-domain merges), \app{Filter scans\dots}
+(Section~\ref{sec:pa_scanfilter}), \app{Calibration\dots} and
+\app{Calibration overview\dots}
+(Section~\ref{sec:pa_calibration}). Merged entries instead offer
+\app{View\dots}, \app{Edit\dots}, and \app{Export ASDF\dots}.
+
+Different runs may sample different parts of the rest-frame spectrum
+even when the lab-frame voltage range is identical, because each
+run's cooler voltage and laser setpoint may differ. \denis{} keeps
+each run's metadata so the rest-frame conversion is always applied
+per run, never globally.
+
+\subsection{The time-of-flight and timestamp gates}
+
+The TOF panel shows the time-resolved ion signal for the selected
+runs, histogrammed with an adjustable \app{Bin} size (default
+1~\si{\micro\second}, down to 1~ns for narrow bunches). Enable the
+\app{Gate} checkbox and set the window in \si{\micro\second} by
+dragging the orange region on the plot or typing into the two value
+boxes; only counts inside the window are histogrammed into the
+spectrum below, which re-bins live as the gate moves.
+
+The Timestamp panel plots event counts over wall-clock time with a
+selectable \app{Unit} (Seconds / Minutes / Hours / Days) and its own
+\app{Bin} size. Its \app{Gate} restricts the spectrum to a chosen
+time window --- the TOF and timestamp histograms themselves always
+show all events; only the spectrum is filtered.
+
+The arrow-step convention is shared by the HFS-model value boxes.
+Clicking inside a value box places the cursor on a digit, and the
+up / down arrows then step the value by the order of magnitude of
+that digit --- click a fine digit for small adjustments, a coarse one
+for big jumps. The active digit is highlighted.
+
+\subsection{Display axis and physics inputs}
+
+The \app{Plot Options} group configures the display. The \app{X-axis}
+drop-down offers five modes: \app{Voltage} (raw DAC scanning
+voltage), \app{Calibrated voltage} (mapped through the calibration
+table), \app{Calibrated beam energy} (cooler minus calibrated
+scanning voltage), \app{Wavenumber}, and \app{Frequency} (rest-frame
+MHz). The Doppler conversion uses the per-run cooler voltage, laser
+setpoint, transition energies (\app{E lower} / \app{E upper}, with
+derived \app{Transition} and \app{Fundamental} read-outs), the laser
+\app{Harmonic}, and the isotope mass --- looked up from $Z$/$A$, with
+an \app{Override} tick to type a custom amu value. When the
+effective bin domain is frequency, the combo is restricted to
+\app{Wavenumber} and \app{Frequency}: a frequency-bin centre has no
+clean inverse back to volts.
+
+\app{Channels} selects which PMTs (1--4, DC) to sum, \app{Normalize}
+scales each run to unit peak height, and the \app{Cooler (V)} /
+\app{Laser (cm$^{-1}$)} fields override the per-run metadata for all
+files at once (a down-arrow button auto-fills from the selected
+file). The override is useful as a sanity check and for runs whose
+recorded values are known to be wrong.
+
+\subsection{Binning}
+\label{sec:pa_binning}
+
+The spectrum is binned \emph{per scan step} by default: one bin per
+native DAC voltage step (or its Doppler-shifted frequency
+equivalent), which reproduces the legacy Data Viewer exactly and is
+structurally immune to the uniform-grid aliasing that produces
+doubled-count spikes when a fixed grid beats against the scan step
+spacing. The \app{Bin:\ $N\times$ step} spin in the Spectrum header
+groups $N$ adjacent steps into one bin (count-weighted centres,
+summed counts) when more smoothing is wanted. Pre-Analysis shares the
+same binning engine as the Analysis Source block
+(Section~\ref{sec:analysis}), so a spectrum read here matches what
+the fitter sees.
+
+\subsection{HFS model overlay}
+
+The \app{HFS Models} panel (left column) adds trial hyperfine
+models. Each model is a checkable panel with a name, dual
+light/dark colours, a line-style selector, an opacity slider, and
+the parameter set: $I$, $J_l$, $J_u$ (one row), then $A_l$, $A_u$,
+$B_l$, $B_u$, \app{Centroid}, \app{Scale}, \app{Bkg}, and Gaussian /
+Lorentzian FWHMs. \app{Fix Al/Au} and \app{Fix Bl/Bu} lock the pairs
+to a typed ratio --- handy when the upper-state constant is poorly
+constrained; the locks carry over as fixed flags when the model is
+imported into the Analysis tab.
+
+Each parameter row has a value box, a slider (with editable limits
+via the \app{\dots} button), and digit-aware arrow stepping. Tick
+\app{Show Labels} to annotate each component on the spectrum with its
+transition label, and \app{Peak Amplitudes} to expose a per-component
+editor: each peak can stay on its \app{Racah} intensity, be typed
+freely (\app{Free}), or be \app{Linked} to another peak by a ratio.
+
+To overlay a ground state and an isomer, add two models and rename
+them (e.g.\ \app{g.s.} and \app{meta} in
+Figure~\ref{fig:quickstart_preanalysis}). \app{Duplicate checked}
+copies ticked models; \app{Remove checked} removes them (undoable
+with \code{Ctrl+Z}).
+
+\subsection{Per-scan filtering}
+\label{sec:pa_scanfilter}
+
+A \emph{scan} is one full sweep of the voltage range. Right-click a
+run and choose \app{Filter scans\dots} to drop individual low-quality
+scans before binning: the dialog lists every scan with its start
+time, duration, event count, PMT count and rate, with bulk
+check/uncheck controls and an \app{Exclude rate $<$} threshold.
+Alternatively tick \app{Show scans} on the Timestamp panel (single
+non-merged run only), pan/zoom to a bad stretch, and click
+\app{Exclude scans in view}. Exclusions live in a registry shared
+with the Analysis tab --- a filter set here applies to the same file
+there --- and persist under the save file's top-level
+\code{scan\_filters} key.
+
+\subsection{Virtual splits}
+
+\menu{Edit $\rightarrow$ Split File\dots} turns one parent ASDF into
+two virtual sub-runs described by tiny \code{.vasdf} sidecar files,
+each carrying a raw-voltage gate plus its own cooler/laser metadata
+--- useful when two isotopes were scanned in one run. Loading a
+\code{.vasdf} in Pre-Analysis or Analysis behaves like an ordinary
+run with a permanent voltage gate; the parent file is never
+modified.
+
+\subsection{Merging runs}
+
+When several runs measure the same isotope, tick at least two loaded,
+non-merged runs and click \app{Merge Checked}. The shared merge
+dialog (Section~\ref{sec:analysis}) asks whether to merge in the
+lab-frame \app{voltage} domain or the Doppler-shifted \app{frequency}
+domain --- the default follows the current x-axis. Use voltage-domain
+merges when the runs share cooler voltage and laser setpoint, and
+frequency-domain merges otherwise (each file is shifted to the rest
+frame with its own metadata first; per-file centroid offsets and any
+GP centroid alignment are applied at the same stage). The result is a
+synthetic entry that bins, overlays models, and exports like an
+ordinary run.
+
+\subsection{Calibrations sub-tab}
+
+The \app{Calibrations} sub-tab shows three stacked diagnostics of the
+scanning-voltage DAC, plotted against the requested set voltage for
+every checked, non-split run: the readback response, the
+readback$-$set offset (supply offset and drift), and the
+step-to-step readback change (step uniformity). It is a quick health
+check before pulling a run into a fit; the per-run calibration
+\emph{fit} and its overrides live in the dialogs described in
+Section~\ref{sec:pa_calibration}.
+
+\subsection{Cooler Voltage sub-tab}
+
+The \app{Cooler Voltage} sub-tab diagnoses the stability of the
+cooler high voltage over each run using robust statistics (median
+reference $V_{\mathrm{ref}}$ and $\sigma = 1.4826\cdot$MAD, immune to
+spikes). A sortable per-run summary table reports
+$V_{\mathrm{ref}}$, $\sigma$, peak-to-peak, spike count, signed
+extremes, and $\sigma$ converted to its approximate Doppler impact in
+MHz. Below it, three panes show the raw per-event cooler voltage,
+the deviation from the run average (with $\pm\sigma$ / $\pm3\sigma$
+bands, a per-bin median drift line, spike dots, and a secondary
+$\approx\Delta\nu$~(MHz) axis), and the per-bin ripple amplitude
+(RMS and P95$-$P5). \app{Clip y to $\pm4\sigma$} keeps normal ripple
+readable when spikes are present; \app{Bins} sets the time binning.
+Virtual splits are skipped on both diagnostic sub-tabs --- they share
+their parent's arrays.
+
+\subsection{Per-run voltage calibration}
+\label{sec:pa_calibration}
+
+Each run carries a DAC$\rightarrow$HV calibration table; a polynomial
+through it turns every event's DAC value into a real voltage, so a
+bad table biases the whole frequency axis (at 30~kV and mass 51,
+1~V of calibration error is $\sim$18~MHz of centroid shift). \denis{}
+fits this calibration itself on every load, so the numbers do not
+depend on which \code{clstools} build is installed, and by default
+\emph{nothing is dropped}: a run whose calibration outliers would
+actually move its centroid gets a blinking \app{!} badge on its row
+(in both Pre-Analysis and Analysis). Clicking it reports the outlier
+count, the centroid shift in MHz, and the axis tilt across the scan,
+with \app{Open calibration\dots} / \app{Keep as-is} --- either way
+the blinking stops for good, and the acknowledgement is saved with
+the project.
+
+Right-clicking a run and choosing \app{Calibration\dots} opens a dialog
+for the DAC$\rightarrow$HV voltage calibration in force for that run. By
+default the app fits every calibration point itself; the override is a
+property of the file and is stored in the project. Under
+\app{Fit this run's own points} you may raise the polynomial order,
+exclude points (drop the first $N$ settling points, an $n\!\cdot\!\sigma$
+residual cut, or an explicit hand-picked set), or tick
+\app{Force zero intercept (p\textsubscript{0} = 0)} to constrain the
+calibration offset to zero for a chain known to have no DC offset --- the
+offset is dropped from the fit, not fitted and then blanked, so the
+gain is the true through-origin slope. You can instead borrow another
+run's calibration or type the coefficients in directly. The dialog shows
+the resulting polynomial, the residuals, and the centroid shift the
+choice costs in MHz. \app{Calibration overview\dots} triages every
+loaded run at once, worst first. Overrides live in a process-wide
+registry shared by every tab and persist under the save file's
+top-level \code{calibrations:} key (acknowledgements under
+\code{calibration\_acks:}), siblings of \code{scan\_filters:}.

@@ -1,0 +1,40 @@
+\documentclass[11pt,twoside,a4paper]{article}
+
+\input{preamble}
+
+\title{%
+    {\Huge\bfseries DENIS}\\[2pt]
+    {\large User Manual}\\[6pt]
+    {\normalsize\itshape Doppler Estimation and Numerical Inference for Spectroscopy}\\[10pt]
+    {\normalsize Version 1.0.0}
+}
+\author{Arda Kayaalp \\ \texttt{arda.kayaalp@kuleuven.be}}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\clearpage
+
+\tableofcontents
+\clearpage
+
+\input{sections/01_introduction}
+\input{sections/02_installation}
+\input{sections/03_quickstart}
+\input{sections/04_estimate}
+\input{sections/05_preanalysis}
+\input{sections/06_analysis}
+\input{sections/07_results}
+\input{sections/08_tools}
+\input{sections/09_settings}
+
+\appendix
+\input{sections/A_physics}
+\input{sections/B_troubleshooting}
+\input{sections/C_citation}
+
+\printbibliography[heading=bibintoc, title={References}]
+
+\end{document}

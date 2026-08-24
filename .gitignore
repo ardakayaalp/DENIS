@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated output
+output/
+share/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+tempCodeRunnerFile.py
+analysis_output/
+.claude/
+
+# User settings (keep .gitkeep, ignore actual settings)
+settings/settings.yaml
+
+# Session logs
+logs/
+
+# LaTeX build artifacts (manual)
+docs/manual/build/

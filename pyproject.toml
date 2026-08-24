@@ -1,0 +1,51 @@
+[project]
+name = "denis"
+version = "1.0.0"
+description = "Doppler Estimation and Numerical Inference for Spectroscopy"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "PyYAML",
+    "tabulate",
+    "satlas2",
+    "asdf",
+    "periodictable",
+    "h5py",
+    "lmfit",
+    "emcee",
+    "clstools",
+    "pymc>=5.25.1",
+]
+
+[dependency-groups]
+# Test-only tooling. Declared as a group (installed by default with
+# `uv sync`) so a plain sync no longer prunes pytest -- previously it was
+# installed ad hoc and every `uv sync` wiped it.
+dev = ["pytest"]
+
+[tool.uv]
+# DENIS is an application, not an installable library: do not try to
+# build or install the project itself, just resolve its dependencies
+# into .venv. Run with: uv run python gui.py
+package = false
+
+[tool.uv.sources]
+# clstools is not published to PyPI; pull from upstream git.
+#
+# Pinned to f6b9d7 ("added ignore option for intercept"), the current upstream
+# main. It adds two calibration controls over the years-old baseline: a
+# `filter_calibration` 2-sigma outlier cut (c0334c0) and an `ignore_intercept`
+# gain-only fit (f6b9d7).
+#
+# DENIS does not depend on this version's behaviour: gui/calibration.py
+# overwrites data.Cal after every Load_Run, so the app's numbers are the same
+# on any commit. Both upstream controls are reimplemented in DENIS's own,
+# clstools-independent fit (its rejection rules and its ignore_intercept
+# option) so they actually reach the numbers and are exposed in the
+# calibration dialog. The pin is honesty and parity, not a functional
+# requirement.
+clstools = { git = "https://github.com/andry3vi/cls_tools.git", rev = "f6b9d7fc57061e8f139c86793796ce9dd75630c8" }
