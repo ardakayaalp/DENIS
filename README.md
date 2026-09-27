@@ -47,7 +47,7 @@ If `uv` is already installed: `uv sync && uv run python gui.py`.
 - Sortable **Peak List** view; intensity-ordered and voltage-ordered peak tables in the log
 
 ### Pre-Analysis Tab
-- Load and overlay ASDF runs with per-run color, opacity, and line style; TOF histogram with interactive gate and adjustable bin size (down to 1 ns); timestamp overview with per-scan exclusion
+- Load and overlay ASDF runs with per-run color, opacity, and line style; TOF histogram with interactive gate and adjustable bin size (default 0.1 us, down to 1 ns); timestamp overview with per-scan exclusion
 - Spectrum in voltage, frequency, or wavenumber, binned **per scan step** by default (immune to uniform-grid aliasing); a header **Bin: N x step** spin groups adjacent steps
 - Layout switcher (3-row / 2-row), X/Y grid toggles, and a **dark-mode plot toggle** (black canvas, neon lines); default run colors from the classic Windows 98 palette, with separate light + dark colors per file and model
 - HFS model overlay with sliders, ratio locks, per-peak Racah/Free/Linked amplitudes, and peak labels
@@ -57,16 +57,16 @@ If `uv` is already installed: `uv sync && uv run python gui.py`.
 
 ### Analysis Tab
 - Block-based fitting pipeline: Source -> Model -> Fitter -> Output
-- **Models:** HFS (sidepeaks, Racah), Voigt, Skewed Voigt, Exponential Decay, Piecewise Constant, Polynomial, each with an optional polynomial background. **Methods:** leastsq, least_squares, slsqp, emcee (MCMC), nelder, powell, cobyla. **Statistics:** Chi-square, Gaussian LLH, Poisson LLH
+- **Models:** HFS (sidepeaks, Racah), Voigt, Skewed Voigt, Exponential Decay, Piecewise Constant, Polynomial; HFS, Voigt and Skewed Voigt carry a polynomial background of any order. **Methods:** leastsq, least_squares, slsqp, emcee (MCMC), nelder, powell, cobyla. **Statistics:** Chi-square, Gaussian LLH, Poisson LLH
 - A **?** guide beside Method & Statistics explains which to use when. A likelihood is never minimised with leastsq (satlas2 would silently switch to SLSQP; DENIS runs nelder and says so), and the sqrt(2) inflation of numerical likelihood error bars can be corrected (opt-in, reported)
 - Separate (per-file, parallel) and simultaneous fitting; opt-in parameter sharing, expression constraints with live validation, Gaussian priors
 - **MCMC diagnostics**: walk plots with the burn-in cut marked, corner plots with filled 2-D credible regions (0.5/1/1.5/2 sigma) and a choice of colour scale, confidence bands, chi-square maps. Burn-in applies to everything (values, errors, correlations, corner plot, band, plotted fit), and emcee / likelihood fits report statistics recomputed from the residuals
 - **Binning as first-class controls**: `Per scan step` (default), `Auto`, `Fixed bin count`, `Fixed bin width`; a `Bin multiple` spin groups adjacent steps; per-file binning overrides via right-click; optional common-grid re-binning for simultaneous fits
 - A three-tab **Binning dialog** (Summary occupancy table, Run detail with bin edges + a measured 1 V ~ N MHz scale strip + aliasing warnings, Compare heatmap); binning warnings land in the fit report and `binning_summary.csv`
-- Multi-start parallel leastsq **Auto-Fitter** to seed initial guesses; **Update iteration** regenerates outputs into the existing iteration without re-fitting (walk/correlation rebuilt from saved chains)
-- **Isotope Shifts / Centroid Correction tab**: weighted averages with Birge inflation, systematic errors from cooler/laser jitter, a full per-shift error budget, and a run preview panel. A Reference Project is listed automatically and marked as the shift reference
+- Multi-start parallel **Auto-Fitter** to seed initial guesses, using the Fitter block's own method and statistics; **Update iteration** regenerates outputs into the existing iteration without re-fitting (walk/correlation rebuilt from saved chains)
+- **Isotope Shifts tab**: weighted averages with Birge inflation, systematic errors from cooler/laser jitter, a full per-shift error budget, and a run preview panel. A Reference Project is listed automatically and marked as the shift reference
 - **Reference Centroid Correction (GP)**: time-dependent drift correction following van den Borne (2025), in its own tab. Fit reference scans in a Reference Project, train a GP (RBF / Matern(5/2) / composite kernel via PyMC v5), exclude individual reference runs, and apply per-run corrections consistently in fits, merges, and the Auto-Fitter; correlated corrections partially cancel in shifts via the GP cross-covariance. A two-panel GP figure and a Centroids diagnostic show the drift and each run's corrected centroid
-- **Cooler-voltage calibration**: 171Yb+/173Yb+ calibration projects fitted over a grid of assumed cooler offsets; each isotope's hyperfine A(dV) line meets its literature value, and the crossing of the two isotope lines gives the offset (validated against the May 2026 Yb report). The offset is applied on top of each file's voltage, and iterations carry it in their name (`iter_001_-30V_CO`)
+- **Cooler-voltage calibration**: 171Yb+/173Yb+ calibration projects fitted over a grid of assumed cooler offsets; each isotope's hyperfine A(dV) line meets its literature value, and the crossing of the two isotope lines gives the offset (validated against an independent analysis of the same runs to 0.01 V). The offset is applied on top of each file's voltage, and iterations carry it in their name (`iter_001_-30V_CO`)
 - **Systematics tab**: scans the cooler offset across the calibrated interval and refits the whole chain at every step (reference fit, GP retraining, per-file corrections, sample fits, isotope shifts), seeding each step from its neighbours. The band per parameter uses the definition you choose (half/full width, std, max or RMS deviation); flagged steps can be re-run with edited seeds; results go to the Results tab
 - A project can be converted between **sample, reference, and cooler-calibration** from its tab's right-click menu
 - On-plot fit-values box, shade-under-fit, and per-plot-type styling via the Output block's **Plot Options...** dialog
@@ -101,9 +101,9 @@ Pinned in `pyproject.toml` + `uv.lock` and resolved automatically by `uv sync`. 
 - **Python 3.10+** (downloaded by `uv` if not present)
 - **PySide6** -- Qt6 GUI framework
 - **matplotlib**, **numpy**, **pandas** -- plotting and numerics
-- **satlas2** -- hyperfine structure fitting (v0.2.8+)
+- **satlas2** -- hyperfine structure fitting (locked at 0.1.10; brings numdifftools, which lmfit uses for the error bars of scalar minimisers)
 - **clstools** -- CLS data loading; not on PyPI, pulled from [github.com/andry3vi/cls_tools](https://github.com/andry3vi/cls_tools) via `[tool.uv.sources]`, pinned to `f6b9d7`. DENIS overwrites `data.Cal` after every `Load_Run` (see [Voltage calibration](#voltage-calibration)), so results do not depend on the pinned version
-- **PyYAML**, **asdf**, **lmfit**, **emcee**, **periodictable**
+- **PyYAML**, **asdf**, **lmfit**, **emcee**, **h5py** (MCMC chains), **periodictable**, **tabulate**
 - **pymc** -- PyMC v5, required only by the GP reference-centroid correction
 
 ---
@@ -119,7 +119,8 @@ DENIS/
 |-- icons/                  # app icon, logo, Lucide icons (MIT)
 |-- cls_estimations/        # core computation library (Doppler, HFS,
 |                           #   Schmidt, isotope shifts, GP corrector,
-|                           #   IUPAC/AME mass table)
+|                           #   cooler calibration, systematics, ASDF
+|                           #   reader, IUPAC/AME mass table)
 |-- gui/                    # PySide6 modules: main window + themes,
 |   |-- analysis/           #   the four tabs, calibration machinery,
 |   |-- manual/             #   in-app manual (Help > Documentation),
@@ -151,7 +152,7 @@ Each run carries a DAC->HV calibration table; a polynomial through it turns ever
 - **Calibration overview...** triages every loaded run at once, worst first
 - Overrides are per-file, shared across tabs, and persist under the save file's top-level `calibrations:` key; every drop is recorded in the fit report
 
-Reproducing old filtered results bit-for-bit: set the flagged runs to `Reject: n-sigma`, sigma = 2, non-iterative.
+Reproducing old filtered results bit-for-bit: in the flagged runs' **Calibration...** dialog set *Drop points* to *Drop residual outliers (n-sigma)*, *Cut at* 2, with *iterative* unticked.
 
 ---
 
