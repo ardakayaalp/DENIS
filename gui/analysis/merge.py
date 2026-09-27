@@ -163,11 +163,22 @@ def compute_merged_spectrum(file_paths, source_config, merge_params,
         data = _cls.CLSDataFrame()
         cal_res = _load_calibrated(data, fpath, cal_map, cal_order=cal_order)
 
-        cooler_override = source_config.get("cooler_override", 0)
+        # Honor the SourceBlock's "Cooler / Laser Override" TICK, not just
+        # the spinbox values -- prepare_run_data (the fit/preview path)
+        # gates on ``override_enabled`` and this must not diverge from it.
+        # The spinboxes keep their defaults (29977 V / 10920 cm^-1) while
+        # unticked, so reading them unconditionally silently Doppler-shifted
+        # every merge with a laser the run never used: with a real setpoint
+        # of 18555 cm^-1 the merged axis landed ~458 THz from the reference
+        # and no model could reach it (2026-09-20).
+        _use_src_override = bool(source_config.get("override_enabled"))
+        cooler_override = (source_config.get("cooler_override", 0)
+                           if _use_src_override else 0)
         if cooler_override > 0:
             data.VCoolDiv = 0
             data.VCoolOffset = cooler_override
-        laser_override = source_config.get("laser_override", 0)
+        laser_override = (source_config.get("laser_override", 0)
+                          if _use_src_override else 0)
         if laser_override > 0:
             data.Laser_set = laser_override
 
@@ -970,6 +981,30 @@ class MergeDialog(QDialog):
         """Show the merge-level Doppler metadata only for voltage
         merges -- frequency merges per-file-shift before binning."""
         self._merge_meta_grp.setVisible(text == "voltage")
+        # A centroid correction is a shift in MHz; a voltage merge has
+        # no MHz axis to shift, so compute_merged_spectrum skips it
+        # entirely. Reflect that in the UI instead of letting the tick
+        # sit there doing nothing.
+        # The combo is connected before the checkbox is built, so a
+        # stray early signal must not crash the dialog.
+        if not hasattr(self, "_centroid_corr"):
+            self._on_step_mode(self._step_mode.currentText())
+            return
+        is_voltage = (text == "voltage")
+        if is_voltage:
+            self._centroid_corr_enabled_before = (
+                self._centroid_corr.isEnabled())
+            self._centroid_corr.setChecked(False)
+            self._centroid_corr.setEnabled(False)
+            self._centroid_corr.setToolTip(
+                "Not available for a voltage-domain merge: the "
+                "correction is a shift in MHz and this merge has no "
+                "frequency axis to shift. Switch the merge domain to "
+                "'frequency' to apply it.")
+        elif getattr(self, "_centroid_corr_enabled_before", None) is not None:
+            self._centroid_corr.setEnabled(
+                self._centroid_corr_enabled_before)
+            self._centroid_corr_enabled_before = None
         # Propagate the unit hint to the step spin tooltip.
         self._on_step_mode(self._step_mode.currentText())
 

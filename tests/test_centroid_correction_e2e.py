@@ -654,7 +654,28 @@ class MergeWiringTests(unittest.TestCase):
         """Full coverage = every file has a correction. Pre-check
         the box because there's no risk of partial-coverage bias."""
         from gui.analysis.merge import MergeDialog
-        src = self._minimal_source_config()
+        src = self._freq_source_config()
+        entries = [{"path": "/x/a.asdf", "run_number": "a"},
+                   {"path": "/x/b.asdf", "run_number": "b"}]
+        corr = {
+            "/x/a.asdf": {"correction_mhz": 1.0, "sigma_mhz": 0.1,
+                           "mode": "Auto"},
+            "/x/b.asdf": {"correction_mhz": 2.0, "sigma_mhz": 0.2,
+                           "mode": "Auto"},
+        }
+        dlg = MergeDialog(entries, src, centroid_corrections_map=corr)
+        self.assertEqual(dlg._domain_combo.currentText(), "frequency")
+        self.assertTrue(dlg._centroid_corr.isEnabled())
+        self.assertTrue(dlg._centroid_corr.isChecked())
+        self.assertTrue(
+            dlg._get_merge_params()["centroid_correction"])
+
+    def test_checkbox_disabled_for_voltage_domain(self):
+        """A centroid correction is a shift in MHz; a voltage merge has
+        no frequency axis, and compute_merged_spectrum skips the whole
+        block. The tick must not sit there as a silent no-op."""
+        from gui.analysis.merge import MergeDialog
+        src = self._freq_source_config()
         entries = [{"path": "/x/a.asdf", "run_number": "a"},
                    {"path": "/x/b.asdf", "run_number": "b"}]
         corr = {
@@ -665,16 +686,21 @@ class MergeWiringTests(unittest.TestCase):
         }
         dlg = MergeDialog(entries, src, centroid_corrections_map=corr)
         self.assertTrue(dlg._centroid_corr.isEnabled())
-        self.assertTrue(dlg._centroid_corr.isChecked())
-        self.assertTrue(
+        dlg._domain_combo.setCurrentText("voltage")
+        self.assertFalse(dlg._centroid_corr.isEnabled())
+        self.assertFalse(dlg._centroid_corr.isChecked())
+        self.assertFalse(
             dlg._get_merge_params()["centroid_correction"])
+        # Switching back restores the coverage-based state.
+        dlg._domain_combo.setCurrentText("frequency")
+        self.assertTrue(dlg._centroid_corr.isEnabled())
 
     def test_checkbox_enabled_but_unchecked_on_partial_coverage(self):
         """Partial coverage: enable the checkbox but DON'T pre-check
         it. Mixing corrected and uncorrected files in one merge can
         bias the merged centroid; the user must opt in deliberately."""
         from gui.analysis.merge import MergeDialog
-        src = self._minimal_source_config()
+        src = self._freq_source_config()
         entries = [{"path": "/x/a.asdf", "run_number": "a"},
                    {"path": "/x/b.asdf", "run_number": "b"}]
         corr = {
@@ -710,6 +736,14 @@ class MergeWiringTests(unittest.TestCase):
             "override_enabled": False, "bin_mode": "Frequency",
             "yerr_mode": "Poisson sqrt(y+1)",
         }
+
+    @staticmethod
+    def _freq_source_config():
+        """Same, but with the physics that makes the merge dialog pick
+        the frequency domain (ref_freq == 0 forces a voltage merge)."""
+        cfg = MergeWiringTests._minimal_source_config()
+        cfg.update({"ref_freq": 1.0e15, "mass": 70.0, "A": 70})
+        return cfg
 
 
 class MergedManualSigmaZeroTests(unittest.TestCase):
@@ -921,6 +955,40 @@ class ConstituentWeightSplitTests(unittest.TestCase):
         self.assertAlmostEqual(s_split, 2.0, places=12)
 
 
+class CompilerHelpTextTests(unittest.TestCase):
+    """The ? dialog is where the fix-it instructions live."""
+
+    def _help(self):
+        from gui.analysis.reference_correction_panel import (
+            ReferenceCorrectionPanel,
+        )
+        return ReferenceCorrectionPanel._help_html()
+
+    def test_help_states_msvc_will_not_work(self):
+        """The reader's first instinct on Windows is Visual Studio.
+        Saying "install a C compiler" is not enough -- the text has
+        to head that off explicitly."""
+        html = self._help()
+        self.assertIn("g++", html)
+        self.assertTrue(
+            "will not satisfy it" in html or "does not" in html,
+            "help must say outright that MSVC cannot satisfy PyTensor")
+
+    def test_help_gives_a_runnable_command(self):
+        """Naming the problem without naming a fix leaves the user
+        exactly where they started."""
+        html = self._help()
+        self.assertTrue(
+            "choco install mingw" in html or "winget install" in html,
+            "help must name at least one install command")
+
+    def test_help_says_a_restart_is_needed(self):
+        """_cxx_note_cache is class-level and never invalidated, so
+        installing g++ mid-session leaves the warning on screen and
+        looks like the install failed."""
+        self.assertIn("Restart", self._help())
+
+
 class PytensorCxxNoteTests(unittest.TestCase):
     """Cover the three branches of _pytensor_cxx_note:
     compiler-present (silent), compiler-absent (warning), and
@@ -942,9 +1010,33 @@ class PytensorCxxNoteTests(unittest.TestCase):
         )
         note = ReferenceCorrectionPanel._pytensor_cxx_note(
             _probe=lambda: "")
-        self.assertIn("not detected", note)
-        self.assertIn("pure-Python", note)
+        # Asserted on what the note must CONVEY, not on its wording:
+        # the user asked what this warning meant, so it has to name
+        # the missing piece, say the answer is unchanged, and say it
+        # is only slower.
+        self.assertIn("C compiler", note)
+        self.assertIn("pure Python", note)
+        self.assertIn("same answer", note)
         self.assertIn("slower", note)
+        # ...and it has to name the RIGHT compiler. PyTensor probes
+        # `g++ -v` and has no MSVC code path, so the note saying
+        # only "C compiler" once sent Arda to Visual Studio -- which
+        # he already had installed, and which cannot satisfy it.
+        self.assertIn("g++", note)
+
+    def test_note_does_not_recommend_msvc(self):
+        """Regression: PyTensor's configdefaults has exactly one
+        compiler branch, `param = "g++"`, plus a fallback probe of
+        <env>/Library/mingw-w64/bin/g++. MSVC is never consulted, so
+        recommending it costs the reader an afternoon and fixes
+        nothing."""
+        from gui.analysis.reference_correction_panel import (
+            ReferenceCorrectionPanel,
+        )
+        note = ReferenceCorrectionPanel._pytensor_cxx_note(
+            _probe=lambda: "")
+        for wrong in ("MSVC", "Visual Studio", "Build Tools"):
+            self.assertNotIn(wrong, note)
 
     def test_compiler_whitespace_only_treated_as_absent(self):
         from gui.analysis.reference_correction_panel import (
@@ -952,7 +1044,7 @@ class PytensorCxxNoteTests(unittest.TestCase):
         )
         note = ReferenceCorrectionPanel._pytensor_cxx_note(
             _probe=lambda: "   ")
-        self.assertIn("not detected", note)
+        self.assertIn("C compiler", note)
 
     def test_pytensor_unavailable_silent(self):
         """If the probe raises (simulating pytensor not installed),

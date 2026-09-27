@@ -3,8 +3,9 @@
 
 The \app{Analysis} tab is where measured data are fitted to a
 hyperfine model. Each fit lives in its own \emph{analysis project}
-sub-tab, and a permanent \app{Isotope Shifts} sub-tab combines the
-fitted centroids across projects into shift tables and plots.
+sub-tab, and a permanent \app{Isotope Shifts / Centroid Correction}
+sub-tab combines the fitted centroids across projects into shift
+tables and plots, and hosts the Gaussian-process drift correction.
 
 \subsection{Projects and the block pipeline}
 
@@ -160,11 +161,56 @@ covariance} (off by default) multiplies parameter errors by
 $\sqrt{\chi^2_{\mathrm{red}}}$; it is forced off for likelihood
 fits.
 
+A likelihood needs a \emph{scalar} minimiser, so \code{leastsq} and
+\code{least\_squares} --- which fit a residual \emph{vector} --- cannot
+be combined with \app{Poisson LLH} or \app{Gaussian LLH}. satlas2 does
+not refuse that pairing; it silently substitutes SLSQP, which on a
+hyperfine spectrum can diverge to a nonsense centroid while still
+reporting success. \denis{} substitutes \code{nelder} instead, flags it
+under \app{Statistics} before the fit runs, and writes a
+\code{[Minimiser]} line at the top of the fit report; choose
+\code{nelder}, \code{powell} or \code{emcee} to decide for yourself.
+Their error bars are estimated numerically by lmfit as $2\times$
+the inverse curvature at the minimum. That is right for
+\app{Chi-square}; under a likelihood they come out $\sqrt{2}$ (41\,\%)
+too large, because the factor 2 assumes a $\chi^2$ while satlas2
+minimises $-\ln L$, half of one. The Fitter block warns about it, and
+\app{Correct likelihood error bars} --- off by default and shown only
+when it applies --- divides them by $\sqrt{2}$; corrected, they agree
+with \code{emcee} to a few per cent. The report states which was
+done. The square
+\app{?} button beside \app{Method} opens a practical guide to all of
+these choices: which minimiser and statistics to use when, where each
+one's error bars come from, and how to set up \code{emcee}.
+
 \app{Show Priors} reveals a Gaussian-prior table (full parameter
 names; each prior adds a penalty term) and \app{MCMC Settings}
 exposes walkers, steps, burn-in, thinning, and auto-convergence ---
 both take effect in \app{Simultaneous} mode (priors and advanced
 constraints are ignored, with a pre-fit warning, in Separate mode).
+
+\paragraph{Burn-in.}
+The walkers start in a tight ball at the Model block's values and
+need a while to spread over the posterior. \app{Burn-in} discards
+those first steps of every walker; keeping them widens the error
+bars --- by 10--40\,\% on a Yb spectrum, where the walkers settled
+after about 300 steps. Set it where the traces of the walk plot have
+settled (the plot marks it with a dashed line), typically 5--10
+autocorrelation times $\tau$, which the report lists under
+\code{[[Burn-in]]} once a burn-in is set; run enough steps for about
+$50\,\tau$ after it. The values, errors, correlations, corner plot,
+confidence band and plotted fit all use the steps after the cut, and
+with an adequate burn-in the \code{emcee} errors of a well-behaved
+fit agree with \code{leastsq}. Starting \code{emcee} from a converged
+point fit shortens the burn-in; \app{Thin} only saves memory.
+
+An \code{emcee} fit --- like any Poisson/Gaussian LLH fit ---
+reports its fit statistics (data points, $\chi^2$, reduced $\chi^2$,
+AIC, BIC) recomputed from the residuals of the plotted curve, and the
+report says so. The sampler's own numbers are not a $\chi^2$: lmfit
+evaluates an \code{emcee} objective once, gets the summed
+log-likelihood as a single number and reports ``1 data point'' with
+$\chi^2 = (\ln L)^2$.
 
 \app{Run Fit} executes; the progress bar blends per-run completion
 with in-run iteration progress. \app{Stop} cancels cooperatively;
@@ -191,7 +237,14 @@ isotope-shift plot).
 \app{Tracker Plots} (Separate mode) plots chosen parameters against
 \app{Run number} or \app{Start time}. \app{Diagnostics} adds the
 $\chi^2$ map (any method) and, for \code{emcee}, correlation / walk
-plots and confidence bands. \app{Iteration} numbers the output
+plots and confidence bands. The walk plot shows every step, with the
+burn-in cut as a dashed line; the correlation plot is a corner plot of
+the samples after the cut --- filled 2-D credible regions at 0.5, 1,
+1.5 and $2\sigma$ (11.8, 39.3, 67.5 and 86.5\,\% of the samples), step
+histograms with the 16/50/84\,\% lines, and each value in its panel
+title. Its style, colour scale and font are set under
+\menu{Settings > Correlation}; \app{Style = Scatter} keeps the
+earlier rendering. \app{Iteration} numbers the output
 folder (\app{Auto} increments \code{iter\_001},~\dots; \app{Manual}
 uses a custom label).
 
@@ -214,7 +267,10 @@ re-rendering, \code{tracking/}, \code{diagnostics/}, and
 \label{sec:autofitter}
 
 \app{Find Parameters} on the \app{Fitter} block opens the
-Auto-Fitter. It runs a multi-start parallel \code{leastsq} sweep ---
+Auto-Fitter. It runs a multi-start parallel sweep under the
+Fitter block's own objective (\code{leastsq} for a chi-square fit,
+a scalar minimiser under a likelihood, so the sweep ranks its
+starts by the statistic the real fit will use) ---
 \app{Starts} Gaussian perturbations of the current parameters (width
 set by \app{Spread}; the first start is always the unperturbed
 guess), each fitted in a worker process --- and ranks the results by
@@ -226,10 +282,13 @@ initial guesses --- run the real fit afterwards. Fixed and
 expression-tied parameters are never perturbed, and in simultaneous
 mode the sweep respects the Fitter block's parameter sharing.
 
-\subsection{Isotope Shifts sub-tab}
+\subsection{Isotope Shifts / Centroid Correction sub-tab}
 
-The permanent \app{Isotope Shifts} sub-tab combines fitted centroids
-across sample projects into shift tables and a comparison plot. The
+The permanent \app{Isotope Shifts / Centroid Correction} sub-tab
+combines fitted centroids into shift tables and a comparison plot. A
+\app{Reference Project} is listed automatically and marked as the
+shift reference, since being the reference is what the project kind
+means. The
 left panel holds a \app{Setup} tab and the
 \app{Reference Correction (GP)} tab
 (Section~\ref{sec:analysis_gp}); the right panel holds \app{Plot},
@@ -270,7 +329,7 @@ reference-centroid correction of van den Borne
 one or more \app{Reference Projects}, then, on the
 \app{Reference Correction (GP)} tab, pick a kernel
 (\app{RBF~+~WhiteNoise}, \app{Matérn(5/2)~+~WhiteNoise}, or the
-composite thesis kernel with a periodic day/night term) and click
+\app{Composite} kernel with a periodic day/night term) and click
 \app{Fit GP}. Each fitted reference centroid becomes one training
 observation $(t, \mathrm{centroid}, \sigma)$; the diagnostic plot
 shows the scatter, the MAP curve, and $1\sigma$/$2\sigma$ bands
@@ -278,7 +337,9 @@ shows the scatter, the MAP curve, and $1\sigma$/$2\sigma$ bands
 always uses the MAP point; PyMC~v5 is required).
 
 \app{Compute per-file corrections} then fills a table with one row
-per sample run: the correction $\mu_{\mathrm{GP}}(t)$, its
+per sample run --- fitted or not, since a correction needs only the
+run's start timestamp --- carrying the correction
+$\mu_{\mathrm{GP}}(t)$, its
 $\sigma$, and a $|\mu|/\sigma$ significance colouring. Each row's
 \app{Mode} is \app{Auto} (use the GP), \app{Manual} (type a value),
 or \app{Off}; the global \app{Apply correction at fit time} checkbox
@@ -290,3 +351,19 @@ between runs) feeds the $\sigma_{\mathrm{corr}}$ columns of the
 shift table. The trained GP and the table round-trip through the
 save file; corrections saved without their GP are dropped on load
 with a prompt to re-fit.
+
+The merge dialog's \app{Align centroids before merging} box is
+enabled only once that table holds a row for every file entering the
+merge; it moves each file onto the drift-free frame \emph{before}
+they are histogrammed together, so the drift cannot smear the merged
+peak. The order is therefore fit the GP, compute the corrections,
+then merge. A merged entry gets no row of its own: it inherits its
+constituents' corrections, whose $n$-weighted mean and propagated
+$\sigma$ are written into its fit metadata.
+
+If PyTensor (PyMC's numerical backend) finds no C compiler on
+\texttt{PATH} it prints a \texttt{g++ not detected} warning and falls
+back to a pure-Python evaluation path. The result is identical; only
+the runtime changes, by roughly one to two orders of magnitude.
+Installing MSVC Build Tools (Windows) or \texttt{m2w64-toolchain}
+restores the compiled path.

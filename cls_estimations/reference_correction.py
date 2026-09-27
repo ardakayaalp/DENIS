@@ -237,6 +237,59 @@ def _gp_cov(t1: np.ndarray, t2: np.ndarray, t_train: np.ndarray,
 #  ReferenceCorrector
 # ──────────────────────────────────────────────────────────────────
 
+#: MAP-curve styling, shared with the Results-tab renderer so the saved
+#: figure matches the one in the panel. Burgundy at 20% transparency.
+MAP_LINE_COLOR = "#800020"
+MAP_LINE_ALPHA = 0.8
+MAP_LINE_WIDTH = 2.6
+#: Legend entry for observations the user has ticked off. They are
+#: plotted but not fitted, so the figure shows the decision.
+MAP_LEGEND_EXCLUDED = "Excluded (not fitted)"
+#: Legend entry for the training observations (the reference-isotope
+#: centroids the GP is fitted to).
+MAP_LEGEND_OBS = "Reference centroids"
+#: Observation styling. The bars carry sigma of a single reference
+#: centroid, so they are dense and mostly overlapping; at matplotlib's
+#: default 1.5 pt they read as a solid band and hide the MAP curve
+#: behind them. Hairlines keep the scatter readable (2026-09-20).
+OBS_MARKER_SIZE = 6.0
+OBS_ELINEWIDTH = 1.1
+OBS_CAPSIZE = 2.5
+OBS_CAPTHICK = 1.1
+
+#: Type and line weights for the GP figure. The Qt canvas stretches
+#: the Figure to the widget's size in inches while font sizes stay in
+#: points, so a maximised window renders 10 pt labels on a ~14 inch
+#: figure -- legible on a thumbnail, tiny in the app. These are set
+#: per-axes rather than through rcParams so no other plot in DENIS is
+#: affected (2026-09-21).
+GP_LABEL_SIZE = 14
+GP_TICK_SIZE = 12
+GP_LEGEND_SIZE = 11
+GP_SPINE_WIDTH = 1.4
+GP_GRID_ALPHA = 0.25
+
+
+def style_gp_axes(ax, *, legend=True, legend_kw=None):
+    """Apply the GP figure's type/line weights to one axes."""
+    ax.xaxis.label.set_size(GP_LABEL_SIZE)
+    ax.yaxis.label.set_size(GP_LABEL_SIZE)
+    ax.tick_params(axis="both", which="major",
+                   labelsize=GP_TICK_SIZE,
+                   width=GP_SPINE_WIDTH, length=5)
+    ax.tick_params(axis="both", which="minor",
+                   width=GP_SPINE_WIDTH * 0.7, length=3)
+    for spine in ax.spines.values():
+        spine.set_linewidth(GP_SPINE_WIDTH)
+    ax.grid(True, alpha=GP_GRID_ALPHA, linewidth=0.8)
+    ax.set_axisbelow(True)
+    if legend:
+        kw = {"fontsize": GP_LEGEND_SIZE, "framealpha": 0.9}
+        kw.update(legend_kw or {})
+        ax.legend(**kw)
+    return ax
+
+
 class ReferenceCorrector:
     """Trains a Gaussian Process on reference-scan centroids and
     predicts the drift correction at arbitrary sample timestamps.
@@ -328,9 +381,15 @@ class ReferenceCorrector:
         or a subprocess) -- not concurrently from multiple Qt threads.
 
         Without a C compiler PyTensor falls back to a pure-Python
-        execution mode that is 10-100× slower; on Windows install
-        ``conda install m2w64-toolchain`` (or use MSVC) for a
-        production-speed fit.
+        execution mode. The answer is identical; the cost depends on
+        the workload -- roughly 2× for a MAP fit on a small GP
+        (most of that time is in SciPy and NumPy, compiled either
+        way), much more for MCMC, which evaluates the model thousands
+        of times. PyTensor probes for ``g++`` specifically and has no
+        MSVC code path, so Visual Studio does not satisfy it; on
+        Windows install MinGW-w64 (``choco install mingw``), or drop
+        it in the environment's ``Scripts/Library/mingw-w64/`` where
+        PyTensor also looks.
         """
         obs_list = list(observations)
         if not obs_list:
@@ -408,9 +467,19 @@ class ReferenceCorrector:
                 ell = pm.Gamma(
                     "ell", alpha=2.0, beta=2.0 / max(t_range / 4, 1e-3))
                 cov_main = (eta ** 2) * pm.gp.cov.Matern52(1, ell)
-            else:  # "thesis"
+            else:  # "thesis" / Composite
                 A_slow = pm.HalfCauchy("A_slow", beta=1000.0)
-                length_slow = pm.Gamma("length_slow", alpha=160.0, beta=1.0)
+                # The thesis fixes this at Gamma(160, 1) -- 160 HOURS,
+                # sized for its multi-week campaign. Applied to a
+                # 3.5 h run that says the drift is flat, and the MAP
+                # then has to call every real wiggle noise (sigma_n
+                # hit 22 MHz on T02). Scale the prior MEAN to the
+                # observed span instead, shape 2, which is what
+                # Arda's independent analysis of the same data does
+                # (2026-09-21).
+                length_slow = pm.Gamma(
+                    "length_slow", alpha=2.0,
+                    beta=2.0 / max(t_range, 1e-3))
                 cov_slow = (A_slow ** 2) * pm.gp.cov.ExpQuad(1, length_slow)
 
                 period_fast = pm.Gamma("period_fast", alpha=12.0, beta=1.0)
@@ -494,6 +563,9 @@ class ReferenceCorrector:
                 "sd": float(row.get("sd", float("nan"))),
                 "hdi_2.5%": float(row.get("hdi_2.5%", float("nan"))),
                 "hdi_97.5%": float(row.get("hdi_97.5%", float("nan"))),
+                # The convergence check: r_hat far from 1 means the
+                # chains disagree and the summary cannot be trusted.
+                "r_hat": float(row.get("r_hat", float("nan"))),
             }
         return out
 
@@ -516,6 +588,57 @@ class ReferenceCorrector:
             self._train_yerr, K_fn, self._hp.sigma_n)
         return mu + self._y_mean, np.sqrt(var)
 
+    @property
+    def mcmc_summary(self) -> dict | None:
+        """Per-hyperparameter posterior summary from the optional
+        MCMC run, or None when only ``find_MAP`` was used.
+
+        Diagnostic ONLY: ``predict`` and ``cov`` evaluate at the MAP
+        point regardless, so the correction is identical whether or
+        not MCMC ran. What it buys is a spread on each
+        hyperparameter -- how well the data pins the drift model
+        down -- and an r_hat convergence check.
+        """
+        return self._mcmc_summary
+
+    def predict_interval(self, t1, t2, *, n: int = 32
+                         ) -> tuple[float, float]:
+        """Mean of mu(t) over ``[t1, t2]``, and the sd of that mean.
+
+        A run's fitted centroid reflects the drift averaged over its
+        acquisition, not the drift at the instant it started, so this
+        is the quantity to subtract:
+
+            G_bar = 1/(t2-t1) * integral of mu(t) dt over [t1, t2]
+
+        Evaluated by uniform quadrature -- the posterior mean is
+        smooth on the scale of a single run, so a few dozen nodes are
+        far more accuracy than the drift model itself has.
+
+        The sd comes from the FULL posterior covariance across the
+        window: G_bar is a linear functional of the GP, so
+
+            Var(G_bar) = 1/n^2 * sum_ij Cov(mu(t_i), mu(t_j))
+
+        Points minutes apart are almost perfectly correlated, so this
+        lands close to sigma at the midpoint -- whereas a naive
+        sigma/sqrt(n) would claim a spurious sqrt(n) improvement.
+
+        Degenerate or reversed intervals fall back to a point
+        prediction at ``t1``.
+        """
+        self._require_fit()
+        t1 = float(t1)
+        t2 = float(t2)
+        if not np.isfinite(t2) or t2 <= t1:
+            mu, sd = self.predict(t1)
+            return float(mu[0]), float(sd[0])
+        nodes = np.linspace(t1, t2, max(2, int(n)))
+        mu, _ = self.predict(nodes)
+        cov = self.cov(nodes, nodes)
+        var = float(np.mean(cov))
+        return float(np.mean(mu)), float(np.sqrt(max(var, 0.0)))
+
     def cov(self, t1, t2) -> np.ndarray:
         """Posterior cross-covariance ``Cov(μ(t1_i), μ(t2_j))``.
 
@@ -536,9 +659,44 @@ class ReferenceCorrector:
                 "ReferenceCorrector has not been fit yet. Call fit() "
                 "with at least two reference observations first.")
 
+    def residuals(self):
+        """Standardised residuals of the training points.
+
+        ``(t_rel, r)`` where
+        ``r_i = (y_i - μ(t_i)) / sqrt(σ_i² + σ_n²)``,
+        with ``σ_n`` the fitted white-noise term.
+
+        This is the pull of a measurement against the fitted mean:
+        measurement error and the model's own noise floor, and
+        nothing else. The GP's *predictive* sd deliberately does not
+        appear -- adding it shrinks every residual by crediting the
+        point with the mean function's uncertainty, which is not what
+        a residual is asking about. It also matches the definition
+        used by the reference pipeline this diagnostic is compared
+        against ("observed minus fitted GP / reference measurement
+        and extra-noise sigma"), so the two figures can be read side
+        by side. Times are relative to the first training point,
+        matching :meth:`diagnostic_arrays`.
+        """
+        self._require_fit()
+        t_rel = np.asarray(self._train_t, dtype=float)
+        y_abs = self._train_y_centered + self._y_mean
+        mu, _sd = self.predict(t_rel + self._t0)
+        yerr = np.asarray(self._train_yerr, dtype=float)
+        sigma_n = float(getattr(self._hp, "sigma_n", 0.0)
+                        or 0.0)
+        denom = np.sqrt(yerr ** 2 + sigma_n ** 2)
+        # A zero denominator would need both the measurement error and
+        # the GP sd to vanish; guard rather than emit inf into a plot.
+        denom = np.where(denom > 0, denom, np.nan)
+        return t_rel, (np.asarray(y_abs, dtype=float)
+                       - np.asarray(mu, dtype=float)) / denom
+
     # ── Diagnostic plot ─────────────────────────────────────
 
-    def diagnostic_plot(self, ax=None, *, n_grid: int = 400, t_unit: str = "h"):
+    def diagnostic_plot(self, ax=None, *, n_grid: int = 400,
+                        t_unit: str = "h", t_scale: float = 1.0,
+                        show_excluded: bool = True):
         """Reproduce thesis Fig. B.2: scatter of observations with
         errorbars, MAP curve, and 1σ / 2σ bands.
 
@@ -550,6 +708,12 @@ class ReferenceCorrector:
             Number of evaluation points across the training range.
         t_unit : str
             Label for the x-axis ("h" by default).
+        t_scale : float
+            Multiplies every time before plotting, so the same fit can
+            be read in hours (1.0) or minutes (60.0) without refitting.
+        show_excluded : bool
+            Draw the ticked-off observations as grey crosses. Off gives
+            the publication view: only what the curve was fitted to.
 
         Returns
         -------
@@ -561,14 +725,59 @@ class ReferenceCorrector:
         if ax is None:
             _, ax = plt.subplots(figsize=(9, 5))
 
-        # Plot in time relative to the first training point so the
-        # x-axis matches thesis Fig. B.2 ("Timestamp [h] (since first
-        # measurement)") rather than displaying ~10⁶ epoch hours.
-        t_train_rel = self._train_t  # already (absolute - _t0)
-        y_train_abs = self._train_y_centered + self._y_mean
+        d = self.diagnostic_arrays(n_grid=n_grid)
+        t_train_rel = d["t_train"] * t_scale
         ax.errorbar(
-            t_train_rel, y_train_abs, yerr=self._train_yerr,
-            fmt="k.", capsize=2, label="Experimental centroid values")
+            t_train_rel, d["y_train"], yerr=d["yerr_train"],
+            fmt="k.", markersize=OBS_MARKER_SIZE,
+            elinewidth=OBS_ELINEWIDTH, capsize=OBS_CAPSIZE,
+            capthick=OBS_CAPTHICK, label=MAP_LEGEND_OBS)
+
+        t_grid_rel = d["t_grid"] * t_scale
+        mu, sigma = d["mu"], d["sigma"]
+        ax.fill_between(
+            t_grid_rel, mu - 2 * sigma, mu + 2 * sigma,
+            color="#aac6e0", alpha=0.6, label=r"2-$\sigma$ interval")
+        ax.fill_between(
+            t_grid_rel, mu - sigma, mu + sigma,
+            color="#f3c98a", alpha=0.85, label=r"1-$\sigma$ interval")
+        ax.plot(t_grid_rel, mu, color=MAP_LINE_COLOR,
+                alpha=MAP_LINE_ALPHA, linewidth=MAP_LINE_WIDTH,
+                label="MAP")
+
+        # Drawn last so an excluded outlier sits on top of the bands
+        # rather than under them, and in grey so it reads as "shown,
+        # not used".
+        t_ex = d.get("t_excluded")
+        if show_excluded and t_ex is not None and len(t_ex):
+            ax.errorbar(
+                t_ex * t_scale, d["y_excluded"], yerr=d["yerr_excluded"],
+                fmt="x", markersize=OBS_MARKER_SIZE + 1,
+                color="#9e9e9e", mew=OBS_ELINEWIDTH + 0.4,
+                elinewidth=OBS_ELINEWIDTH, capsize=OBS_CAPSIZE,
+                capthick=OBS_CAPTHICK, zorder=5,
+                label=MAP_LEGEND_EXCLUDED)
+
+        ax.set_xlabel(f"Timestamp [{t_unit}] (since first measurement)")
+        # Units stated: the corrections this curve produces are
+        # read off it in MHz, and the Results-tab renderer already
+        # labels its copy "Centroid (MHz)".
+        ax.set_ylabel("Centroid (MHz)")
+        style_gp_axes(ax, legend_kw={"loc": "best"})
+        return ax
+
+    def diagnostic_arrays(self, *, n_grid: int = 400) -> dict:
+        """The numbers behind :meth:`diagnostic_plot`.
+
+        Split out so the Results tab can re-render the same figure from
+        a saved ``.npz`` without re-running the GP, and so both paths
+        cannot drift apart.
+        """
+        self._require_fit()
+        # Time relative to the first training point so the x-axis reads
+        # "hours since first measurement" rather than ~10^6 epoch hours.
+        t_train_rel = np.asarray(self._train_t, dtype=float)
+        y_train_abs = self._train_y_centered + self._y_mean
 
         pad = 0.02 * (float(t_train_rel.max() - t_train_rel.min()) + 1.0)
         t_grid_rel = np.linspace(
@@ -578,19 +787,26 @@ class ReferenceCorrector:
         )
         # predict() expects absolute time; re-add t0 for the call.
         mu, sigma = self.predict(t_grid_rel + self._t0)
-
-        ax.fill_between(
-            t_grid_rel, mu - 2 * sigma, mu + 2 * sigma,
-            color="#aac6e0", alpha=0.6, label=r"2-$\sigma$ interval")
-        ax.fill_between(
-            t_grid_rel, mu - sigma, mu + sigma,
-            color="#f3c98a", alpha=0.85, label=r"1-$\sigma$ interval")
-        ax.plot(t_grid_rel, mu, color="#1f5d8c", label="MAP")
-
-        ax.set_xlabel(f"Timestamp [{t_unit}] (since first measurement)")
-        ax.set_ylabel("Centroid")
-        ax.legend(loc="best")
-        return ax
+        # Excluded observations are carried through so the plot can
+        # SHOW what was dropped. A point that simply vanishes from the
+        # figure looks like a missing run rather than a deliberate
+        # exclusion, and the reader cannot tell whether the curve
+        # ignores it or never saw it.
+        excl = [o for o in self._observations if not o.include]
+        return {
+            "t_train": t_train_rel,
+            "y_train": np.asarray(y_train_abs, dtype=float),
+            "yerr_train": np.asarray(self._train_yerr, dtype=float),
+            "t_grid": t_grid_rel,
+            "mu": np.asarray(mu, dtype=float),
+            "sigma": np.asarray(sigma, dtype=float),
+            "t_excluded": np.array(
+                [o.t - self._t0 for o in excl], dtype=float),
+            "y_excluded": np.array(
+                [o.centroid for o in excl], dtype=float),
+            "yerr_excluded": np.array(
+                [o.sigma for o in excl], dtype=float),
+        }
 
     # ── Save / load ──────────────────────────────────────────
 

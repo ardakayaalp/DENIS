@@ -25,6 +25,7 @@ import pytest
 satlas2 = pytest.importorskip("satlas2")
 
 from gui.analysis.auto_fitter import _run_one_fit
+from gui.analysis.fitting import LLH_FALLBACK_METHOD
 from gui.analysis.naming import full_param_name
 
 
@@ -91,6 +92,42 @@ def test_emcee_method_falls_back_to_leastsq_for_search(monkeypatch):
     assert res["success"], res.get("error")
     assert captured.get("method") == "leastsq"
 
+
+def test_a_likelihood_never_searches_with_leastsq(monkeypatch):
+    """satlas2 would swap in SLSQP, which diverges on a
+    hyperfine spectrum -- the multi-start would then rank its starting
+    points by a broken fit (update log CB, 2026-09-25)."""
+    captured = _spy_fit(monkeypatch)
+    res = _run_one_fit(
+        [_make_data()], [_voigt_config()], _INIT, _VK,
+        fitter_config={"method": "leastsq", "llh": True,
+                       "llh_method": "poisson"})
+    assert res["success"], res.get("error")
+    assert captured.get("method") == LLH_FALLBACK_METHOD
+    assert captured.get("llh") is True
+
+
+def test_a_scalar_minimiser_is_kept_under_a_likelihood(monkeypatch):
+    captured = _spy_fit(monkeypatch)
+    res = _run_one_fit(
+        [_make_data()], [_voigt_config()], _INIT, _VK,
+        fitter_config={"method": "powell", "llh": True,
+                       "llh_method": "poisson"})
+    assert res["success"], res.get("error")
+    assert captured.get("method") == "powell"
+
+
+def test_emcee_under_a_likelihood_searches_with_a_scalar_method(
+        monkeypatch):
+    """emcee drops to a point objective for the search, and that
+    point objective still has to be able to minimise the likelihood."""
+    captured = _spy_fit(monkeypatch)
+    res = _run_one_fit(
+        [_make_data()], [_voigt_config()], _INIT, _VK,
+        fitter_config={"method": "emcee", "llh": True,
+                       "llh_method": "poisson"})
+    assert res["success"], res.get("error")
+    assert captured.get("method") == LLH_FALLBACK_METHOD
 
 def test_fitter_block_expression_is_applied(monkeypatch):
     # A fitter-block expression (full names) must be applied, not dropped.

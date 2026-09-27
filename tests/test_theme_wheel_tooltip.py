@@ -8,7 +8,10 @@ Pins the three Phase-1 contracts:
 
 1. ``gui.theme.apply_theme`` styles the whole app (palette + a stylesheet
    that reaches tooltips, scrollbars, tables...) and installs the wheel
-   guard exactly once.
+   guard exactly once. Every test that actually applies a theme runs in
+   a subprocess with a fresh QApplication -- restyling the shared test
+   app re-polishes hundreds of accumulated widgets and stalls the full
+   suite; see ``run_in_fresh_app``.
 2. The wheel guard: scrolling over an UNFOCUSED spin box / combo / slider
    / tab bar must not change its value; once focused (clicked), the wheel
    works again; WheelFocus policies are downgraded to StrongFocus so the
@@ -44,6 +47,31 @@ def _ensure_app():
     return _APP
 
 
+def run_in_fresh_app(case, body):
+    """Run ``body`` against a brand-new QApplication in a subprocess.
+
+    ``body`` is a plain-text block that may use ``app``; it is
+    dedented, so it can be written indented at the call site. Any
+    assertion failure surfaces as this test failing, with the child's
+    stdout and stderr attached.
+    """
+    import os
+    import subprocess
+    import sys
+    import textwrap
+    code = ("from PySide6.QtWidgets import QApplication\n"
+            "app = QApplication([])\n"
+            + textwrap.dedent(body).strip("\n") + "\n"
+            "print('OK')\n")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, cwd=root, env=env, timeout=120)
+    case.assertEqual(res.returncode, 0,
+                     f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}")
+    case.assertIn("OK", res.stdout)
+
+
 def _wheel(widget, delta=120):
     """Send a synthetic vertical wheel event to ``widget``."""
     pos = QPointF(5.0, 5.0)
@@ -56,26 +84,50 @@ def _wheel(widget, delta=120):
 
 
 class ThemeApplyTests(unittest.TestCase):
+    """What ``apply_theme`` puts on the QApplication.
+
+    IMPORTANT, same rule as :class:`Win98ThemeTests`: never call
+    ``apply_theme`` on the SHARED test app. It re-polishes every
+    widget the session has accumulated, and by the time the full
+    suite reaches this file (~740 tests in) that restyle stops
+    finishing -- the run pins a core indefinitely and never prints a
+    summary, so the suite yields no verdict at all. Everything that
+    needs a real restyle runs in a subprocess with a fresh
+    QApplication instead (2026-09-20).
+    """
+
     def setUp(self):
         self.app = _ensure_app()
 
     def test_apply_theme_sets_stylesheet_and_palette(self):
-        from gui.theme import apply_theme
-        apply_theme(self.app)
-        qss = self.app.styleSheet()
-        for token in ("QToolTip", "QScrollBar", "QTableWidget",
-                      "QGroupBox", "QComboBox", "QAbstractSpinBox",
-                      "QFrame#plotCard"):
-            self.assertIn(token, qss)
-        self.assertEqual(
-            self.app.palette().color(self.app.palette().ColorRole.Highlight)
-                .name(), "#42a5f5")
+        run_in_fresh_app(self, """
+            from gui.theme import apply_theme
+            apply_theme(app)
+            qss = app.styleSheet()
+            for token in ("QToolTip", "QScrollBar", "QTableWidget",
+                          "QGroupBox", "QComboBox", "QAbstractSpinBox",
+                          "QFrame#plotCard"):
+                assert token in qss, token
+            assert app.palette().color(
+                app.palette().ColorRole.Highlight).name() == "#42a5f5"
+        """)
+
+    def test_apply_theme_installs_the_wheel_guard(self):
+        run_in_fresh_app(self, """
+            from gui.theme import apply_theme, install_wheel_guard
+            apply_theme(app)
+            first = app._denis_wheel_guard
+            assert install_wheel_guard(app) is first
+        """)
 
     def test_wheel_guard_installed_once(self):
-        from gui.theme import apply_theme, install_wheel_guard
-        apply_theme(self.app)
-        first = self.app._denis_wheel_guard
+        """Idempotence on the shared app -- install_wheel_guard only
+        attaches an event filter, so it is safe here; the restyle
+        that is not lives in the subprocess test above."""
+        from gui.theme import install_wheel_guard
+        first = install_wheel_guard(self.app)
         self.assertIs(install_wheel_guard(self.app), first)
+        self.assertIs(self.app._denis_wheel_guard, first)
 
     def test_dialog_style_compat_surface(self):
         import gui.dialog_style as ds

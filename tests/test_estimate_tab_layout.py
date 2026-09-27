@@ -22,6 +22,7 @@ IsotopeListWidget, RunTab, PlotsTab, ISOTOPE_COLORS); PySide6.
 
 import unittest
 
+from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication, QSplitter, QTabWidget
 
 
@@ -60,10 +61,10 @@ class EstimateTabStructureTests(unittest.TestCase):
     def test_column_width_caps(self):
         """Columns 1-2 are capped so the plots get the freed width.
 
-        Column 1's band is measured from the content's layout minimum
+        Both bands are measured from the content's layout minimum
         (font/DPI dependent), so assert the invariants rather than
-        pixels: wide enough that the group borders can't clip, and no
-        more than a small slack above that.
+        pixels: wide enough that nothing can clip, and no more than a
+        small slack above that.
         """
         from gui.estimate_tab import EstimateTab
         tab = EstimateTab()
@@ -71,8 +72,42 @@ class EstimateTabStructureTests(unittest.TestCase):
         need = gp.preferred_width()
         self.assertGreaterEqual(gp.minimumWidth(), need)
         self.assertLessEqual(gp.maximumWidth(), need + 60)
-        self.assertLessEqual(tab.params_tab.isotope_list.maximumWidth(),
-                             560)
+        il = tab.params_tab.isotope_list
+        need2 = il.preferred_width()
+        self.assertGreaterEqual(il.minimumWidth(), need2)
+        self.assertLessEqual(il.maximumWidth(), need2 + 100)
+
+    def test_isotope_panel_never_clips_at_column_minimum(self):
+        """Regression: at the column's minimum width, the widest panel
+        state (timing mode + isomer) must fit the scroll viewport --
+        the TOF Gate spin and the header Remove button used to be cut
+        off at the right edge (hardcoded 320-460 band, 2026-09-15)."""
+        from PySide6.QtWidgets import QScrollArea
+        from gui.estimate_tab import EstimateTab
+        tab = EstimateTab()
+        il = tab.params_tab.isotope_list
+        il.add_isotope()
+        panel = il.panels[-1]
+        panel.bg_tof_radio.setChecked(True)
+        panel.isomer_check.setChecked(True)
+        tab.resize(1600, 900)
+        tab.show()
+        QCoreApplication.processEvents()
+        # Pin the splitter at the measured minimums.
+        sp = tab.params_tab._main_splitter
+        sp.setSizes([tab.params_tab.global_params.minimumWidth(),
+                     il.minimumWidth(), 900])
+        QCoreApplication.processEvents()
+        viewport = il._scroll.viewport()
+        self.assertLessEqual(panel.width(), viewport.width() + 1,
+                             "isotope panel wider than the viewport")
+        for w in (panel.remove_btn, panel.bg_gate, panel.bg_cont):
+            right = w.mapTo(viewport, w.rect().topRight()).x()
+            self.assertLessEqual(
+                right, viewport.width() + 1,
+                f"{w.objectName() or w.__class__.__name__} clips at "
+                f"x={right} (viewport {viewport.width()})")
+        tab.close()
 
     def test_run_column_hosts_options_plots_log(self):
         """Column 3: options at natural height, then plots|log splitter

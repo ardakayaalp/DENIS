@@ -558,8 +558,10 @@ class IsotopePanel(QGroupBox):
         self.ref_check.toggled.connect(self._on_reference_toggled)
         header.addWidget(self.ref_check)
         header.addStretch()
+        # No fixed width: 70 px fit the dark theme but cramps the text
+        # under Classic 98's bevels/font. The style's sizeHint knows
+        # its own padding; the header stretch keeps the button compact.
         self.remove_btn = QPushButton("Remove")
-        self.remove_btn.setFixedWidth(70)
         self.remove_btn.clicked.connect(lambda: self.removed.emit(self))
         header.addWidget(self.remove_btn)
         main_layout.addLayout(header)
@@ -581,6 +583,13 @@ class IsotopePanel(QGroupBox):
             "looked up from the IUPAC/AME table for the current Z and A.")
         self.iso_mass_label.setStyleSheet(
             "color: #aaa; font-style: italic;")
+        # Cosmetic read-out: never let its text width inflate the
+        # column's layout minimum (it did — the amu string alone
+        # widened every panel by >100 px vs the empty "—" state, so
+        # the measured column band depended on whether a mass had
+        # been looked up yet).
+        self.iso_mass_label.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                          QSizePolicy.Policy.Preferred)
         a_row.addWidget(self.iso_mass_label, 1)
         self.iso_A.valueChanged.connect(self._update_mass_display)
         form.addRow("A:", a_row)
@@ -658,7 +667,12 @@ class IsotopePanel(QGroupBox):
             tooltip="Background count rate (counts/s per voltage step)")
         bg_form.addRow(self.bg_simple_radio, self.bg_rate)
 
-        # TOF-gated background
+        # TOF-gated background. Cont and Gate used to share the radio's
+        # row; that row's layout minimum (radio + two labelled spins,
+        # and the Cont spin sizes itself for "100000000.0") was the
+        # widest thing on the panel and clipped at the column's default
+        # width -- same disease as the Laser anchor row. Two lines,
+        # with Gate on an indented form row like "  Uniform timing:".
         tof_row = QHBoxLayout()
         tof_row.setSpacing(8)
         self.bg_cont = _make_double(
@@ -666,12 +680,11 @@ class IsotopePanel(QGroupBox):
             tooltip="Continuous background rate before TOF gating (Hz)")
         tof_row.addWidget(QLabel("Cont:"))
         tof_row.addWidget(self.bg_cont)
+        bg_form.addRow(self.bg_tof_radio, tof_row)
         self.bg_gate = _make_double(
             2.5, 0.01, 1000, 2, 0.1,
             tooltip="Time-of-flight gate width (\u03bcs)")
-        tof_row.addWidget(QLabel("Gate (\u03bcs):"))
-        tof_row.addWidget(self.bg_gate)
-        bg_form.addRow(self.bg_tof_radio, tof_row)
+        bg_form.addRow("  Gate (\u03bcs):", self.bg_gate)
 
         main_layout.addWidget(self.bg_group)
 
@@ -728,10 +741,15 @@ class IsotopePanel(QGroupBox):
 
         # The input values are short; without a cap the fields stretch
         # to whatever width the column has and the panel is mostly air.
+        # The MINIMUM matters just as much: Qt sizes a spinbox for its
+        # widest representable text, so a 0..1e8 range demands ~184 px
+        # and inflates the whole column's layout minimum. Typed values
+        # are far shorter than the range bound; 70 px shows them all.
         # (findChildren takes one type per call in PySide6.)
         for cls in (QDoubleSpinBox, QSpinBox, QLineEdit):
             for w in self.findChildren(cls):
                 w.setMaximumWidth(160)
+                w.setMinimumWidth(70)
         for f in self.findChildren(QFormLayout):
             f.setVerticalSpacing(4)
             f.setHorizontalSpacing(8)
@@ -1055,6 +1073,36 @@ class IsotopeListWidget(QWidget):
         self.panel_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         scroll.setWidget(self.panel_container)
         outer.addWidget(scroll)
+        self._scroll = scroll
+
+    def preferred_width(self):
+        """Column width at which no isotope-panel row clips.
+
+        The scroll area has its horizontal scrollbar off, so a panel
+        wider than the viewport is simply cut at the right edge (the
+        Remove button and the TOF Gate spin were the casualties).
+        Measure a worst-case probe panel instead of hardcoding a band:
+        the layout minimum depends on font/DPI, which is exactly why
+        the fixed 320-460 px band clipped on this machine.
+        """
+        from PySide6.QtWidgets import QStyle
+        probe = IsotopePanel(1)
+        try:
+            # Widest realistic state: timing mode (default) with the
+            # isomer sub-panel expanded. Schmidt/AB bodies stay
+            # collapsed -- their rows are narrow, and ticking Schmidt
+            # on a probe would auto-fill mu through the undo stack.
+            probe.isomer_check.setChecked(True)
+            need = probe.minimumSizeHint().width()
+        finally:
+            probe.deleteLater()
+        sbw = self._scroll.style().pixelMetric(
+            QStyle.PixelMetric.PM_ScrollBarExtent, None, self._scroll)
+        m = self.layout().contentsMargins()
+        pm = self.panel_layout.contentsMargins()
+        return (need + pm.left() + pm.right()
+                + sbw + 2 * self._scroll.frameWidth()
+                + m.left() + m.right())
 
     def set_z(self, z):
         self._z = int(z) if z else 0
@@ -1583,11 +1631,14 @@ class ParametersTab(QWidget):
         self.global_params.setMaximumWidth(col1_need + 44)
         splitter.addWidget(self.global_params)
 
-        # Column 2: Isotope list — capped for the same reason; the
-        # per-panel fields carry their own 160 px limit too.
+        # Column 2: Isotope list — same measured-band treatment as
+        # column 1 (a hardcoded 320-460 band clipped the TOF-gate row
+        # and the Remove button); the per-panel fields carry their own
+        # 160 px limit too.
         self.isotope_list = IsotopeListWidget()
-        self.isotope_list.setMinimumWidth(320)
-        self.isotope_list.setMaximumWidth(460)
+        col2_need = self.isotope_list.preferred_width()
+        self.isotope_list.setMinimumWidth(col2_need)
+        self.isotope_list.setMaximumWidth(col2_need + 80)
         splitter.addWidget(self.isotope_list)
 
         # Column 3: Run options + plots + log. The plots panel lives
@@ -1604,7 +1655,7 @@ class ParametersTab(QWidget):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 0)
         splitter.setStretchFactor(2, 1)
-        splitter.setSizes([col1_need + 4, 400, 950])
+        splitter.setSizes([col1_need + 4, col2_need + 4, 950])
         layout.addWidget(splitter)
         self._main_splitter = splitter
 
@@ -1647,9 +1698,11 @@ class ParametersTab(QWidget):
         if sum(sizes) <= avail + 2:
             return  # already fits within the viewport
         gp = self.global_params
+        il = self.isotope_list
         col1 = min(max(sizes[0] or gp.minimumWidth(),
                        gp.minimumWidth()), gp.maximumWidth())
-        col2 = min(max(sizes[1] or 400, 320), 460)
+        col2 = min(max(sizes[1] or il.minimumWidth(),
+                       il.minimumWidth()), il.maximumWidth())
         col3 = max(420, avail - col1 - col2)
         sp.setSizes([col1, col2, col3])
 
@@ -2263,6 +2316,19 @@ class EstimateTab(QWidget):
         bottom.addWidget(info_btn)
         bottom.addStretch()
         layout.addLayout(bottom)
+
+    def ui_layout(self):
+        """Adjustable geometry of this tab (see gui.ui_layout)."""
+        from gui.ui_layout import collect
+        return collect(
+            columns=getattr(self.params_tab, "_main_splitter", None),
+            plots_log=getattr(self.run_tab, "_vsplit", None))
+
+    def apply_ui_layout(self, d):
+        from gui.ui_layout import restore
+        restore(d,
+                columns=getattr(self.params_tab, "_main_splitter", None),
+                plots_log=getattr(self.run_tab, "_vsplit", None))
 
     def set_plots_expanded(self, expanded):
         """⛶ toggle: hide (or restore) everything except the plots

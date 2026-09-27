@@ -129,6 +129,19 @@ def install(app_root, *, verbose=False, keep=20):
         log_fh = None
         _log_path = None
 
+    # 0. Native crashes. A segfault or heap corruption kills the
+    # process without unwinding: sys.excepthook never runs, the tee is
+    # never flushed, and the log ends after the banner -- which is
+    # exactly what a user reports as "it just closed". faulthandler
+    # writes the C-level stack of every thread straight into the log
+    # file's descriptor, so that crash leaves evidence (2026-09-25).
+    if log_fh is not None:
+        try:
+            import faulthandler
+            faulthandler.enable(file=log_fh, all_threads=True)
+        except Exception:
+            pass
+
     # 1. Tee stdout/stderr -> console (if present) + log file.
     sys.stdout = _TeeStream(sys.__stdout__, log_fh)
     sys.stderr = _TeeStream(sys.__stderr__, log_fh)

@@ -24,6 +24,7 @@ import os
 import sys
 import tempfile
 import threading
+import shutil
 import unittest
 
 from gui import session_log
@@ -145,6 +146,25 @@ class InstallTests(unittest.TestCase):
         # Second call (already installed) must no-op and return the same path.
         p2 = session_log.install(tempfile.mkdtemp())
         self.assertEqual(p1, p2)
+
+
+class NativeCrashCaptureTests(unittest.TestCase):
+    """A segfault kills the process without unwinding: sys.excepthook
+    never runs and the tee is never flushed, so the log ends after the
+    banner -- which is what a user reports as "it just closed". The log
+    has to capture the C-level stack itself."""
+
+    def test_install_enables_faulthandler_on_the_log(self):
+        import faulthandler
+        import tempfile
+        from gui import session_log
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        session_log._installed = False
+        path = session_log.install(root)
+        self.addCleanup(setattr, session_log, "_installed", False)
+        self.assertTrue(faulthandler.is_enabled())
+        self.assertTrue(os.path.isfile(path))
 
 
 if __name__ == "__main__":

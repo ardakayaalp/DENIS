@@ -26,11 +26,13 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from PySide6.QtCore import QThread, Signal
 
 from gui.analysis.naming import (
-    NON_FIT_PARAMS, is_fit_param_name, safe_model_name,
+    NON_FIT_PARAMS, background_coefficients, bkg_param_key,
+    is_fit_param_name, safe_model_name,
     source_name_for_path, source_name_for_merged,
     source_name_for_descriptor, full_param_name,
 )
 from gui.analysis.expr_validation import lower_model_expression
+from gui.analysis.mcmc_plots import posterior_slice
 
 # clstools drags in pandas + scipy (~2 s of app startup); probe for it
 # on first use (this module is on the startup import path).
@@ -48,13 +50,20 @@ def _has_clstools():
     return _CLSTOOLS_OK
 
 
+#: ToF histogram bin for the output plots, in microseconds. Matches
+#: the Pre-Analysis default so the same run looks the same in both
+#: tabs; 1 us drew a couple-of-microsecond bunch as three steps
+#: (2026-09-25).
+TOF_BIN_US = 0.1
+
+
 def _compute_tof_hist(data, pmt_gate):
-    """ToF histogram (1 µs bins) of the PMT-gated events in a CLSDataFrame.
+    """ToF histogram of the PMT-gated events in a CLSDataFrame.
 
     Returns ``{"centers": [...], "counts": [...]}`` (bin centres + counts)
-    or ``None`` when no TOF/TDC data is available. Uses fixed 1 µs bins
-    spanning the observed TOF range so the output ToF plot shows the
-    beam's time structure.
+    or ``None`` when no TOF/TDC data is available. Uses fixed
+    TOF_BIN_US bins spanning the observed TOF range so the output ToF
+    plot shows the beam's time structure.
     """
     try:
         import pandas as _pd
@@ -68,7 +77,7 @@ def _compute_tof_hist(data, pmt_gate):
             tof = tof[df["TDC"].isin(list(pmt_gate)).values]
         if len(tof) == 0:
             return None
-        binsize = 1.0
+        binsize = TOF_BIN_US
         bins = np.arange(tof.min() - 0.5 * binsize,
                          tof.max() + 0.5 * binsize, binsize)
         if len(bins) < 2:
@@ -114,13 +123,10 @@ def _apply_emcee_burnin(fitter, chain_file, burn, thin):
         print(f"[FitWorker] burn-in chain read failed: {exc}", flush=True)
         return None
 
-    nsteps = chain.shape[0]
-    if burn >= nsteps:
-        # Asking to discard everything: clamp to leave a few samples so
-        # the percentiles are still defined.
-        burn = max(0, nsteps - 2)
-    sliced = chain[burn::max(1, thin), :, :]    # (steps', walkers, ndim)
-    if sliced.shape[0] < 2:
+    # Asking to discard everything keeps the last two steps so the
+    # percentiles are still defined; the plots use the same rule.
+    sliced, burn = posterior_slice(chain, burn, thin)
+    if sliced is chain:
         return None
 
     params = fitter.result.params
@@ -141,6 +147,25 @@ def _apply_emcee_burnin(fitter, chain_file, burn, thin):
         params.update_constraints()
     except Exception:
         pass
+    # Correlations from the same samples: satlas2 took them from the
+    # full chain, burn-in included.
+    if len(var_labels) > 1:
+        corr = np.corrcoef(flat.T)
+        for a, lab in enumerate(var_labels):
+            params[lab].correl = {
+                other: float(corr[a, b])
+                for b, other in enumerate(var_labels) if b != a}
+    # And the models must hold these values too. satlas2 set them to
+    # the FULL-chain medians before this ran, and every curve, residual
+    # and chi-square after this point is evaluated from the models --
+    # the plotted fit was not the fit in the table (2026-09-25).
+    try:
+        fitter.setParameters(params)
+        fitter.setUncertainties(params)
+        fitter.setCorrelations(params)
+    except Exception as exc:
+        print(f"[FitWorker] could not push burned-in values into the "
+              f"models: {exc}", flush=True)
 
     # Autocorrelation time (per varying param) for the fit report.
     acor = None
@@ -211,6 +236,114 @@ def _shift_binning_info_x(info, corr_mhz):
                 pass
 
 
+#: Minimisers that cannot be used on a likelihood. satlas2 does not
+#: refuse them -- it quietly substitutes SLSQP (core.py: "if
+#: method.lower() in ['leastsq', 'least_squares']: method = 'slsqp'"),
+#: and on a Yb hyperfine spectrum SLSQP walks off to a centroid of
+#: 1e12 MHz and an A_l of -9659 without raising. The fit "succeeds",
+#: the numbers are nonsense and the plotted model is nowhere near the
+#: data, which is what "Poisson cannot fit" looked like from the
+#: outside (Arda, 2026-09-25).
+_LEAST_SQUARES_METHODS = ("leastsq", "least_squares")
+
+#: What to use instead. Nelder-Mead is what Arda's own pipeline
+#: minimises the Poisson likelihood with, and it reproduces its
+#: numbers: A_l 12637.36 against 12637.23 from its emcee run.
+LLH_FALLBACK_METHOD = "nelder"
+
+
+def resolve_llh_method(fitter_config):
+    """``(method, note)`` for this objective.
+
+    A likelihood needs a scalar minimiser. Rather than let satlas2
+    substitute one silently, substitute a working one and say so.
+    """
+    method = str(fitter_config.get("method", "leastsq"))
+    if not fitter_config.get("llh"):
+        return method, ""
+    if method.lower() not in _LEAST_SQUARES_METHODS:
+        return method, ""
+    note = (f"{method} cannot minimise a likelihood (it fits a residual "
+            f"vector, not a scalar); used {LLH_FALLBACK_METHOD} instead. "
+            f"Pick {LLH_FALLBACK_METHOD}, powell or emcee in the Fitter "
+            f"block to choose for yourself.")
+    return LLH_FALLBACK_METHOD, note
+
+
+#: Methods whose error bars do NOT come from lmfit's numerical
+#: covariance. leastsq / least_squares take theirs from the Jacobian
+#: (and never run under a likelihood, see resolve_llh_method); emcee
+#: samples the likelihood itself. Every other method's covariance is
+#: lmfit's inverse(Hessian) x 2 -- a factor that assumes the minimised
+#: value is a chi-square (chi2 = -2 ln L). Under a likelihood satlas2
+#: minimises -ln L, so those error bars come out sqrt(2) too large:
+#: 1.412-1.414 on every parameter against the curvature of -ln L, and
+#: 2.50 against a true scatter of 1.74 over 300 simulated spectra
+#: (2026-09-25). lmfit has no MINUIT-style errordef to be told
+#: otherwise.
+_OWN_ERROR_METHODS = ("leastsq", "least_squares", "emcee")
+
+#: What the opt-in correction multiplies each error bar by.
+LLH_ERROR_FACTOR = 2 ** -0.5
+
+
+def llh_errors_inflated(fitter_config):
+    """True when this fit's error bars will carry lmfit's x2: a
+    likelihood minimised by a method whose errors lmfit estimates
+    numerically (after resolve_llh_method's substitution)."""
+    if not fitter_config.get("llh"):
+        return False
+    method, _ = resolve_llh_method(fitter_config)
+    return method.lower() not in _OWN_ERROR_METHODS
+
+
+def _correct_llh_errors(fitter):
+    """Divide every error bar by sqrt(2) and the covariance by 2.
+
+    Correlations are unchanged. The models get the corrected
+    uncertainties too, so nothing downstream sees the old ones.
+    """
+    import math
+    params = fitter.result.params
+    for par in params.values():
+        if par.stderr is not None and math.isfinite(par.stderr):
+            par.stderr = float(par.stderr) * LLH_ERROR_FACTOR
+    covar = getattr(fitter.result, "covar", None)
+    if covar is not None:
+        fitter.result.covar = np.asarray(covar) * 0.5
+    try:
+        fitter.setUncertainties(params)
+    except Exception:
+        pass
+
+
+def _llh_error_note(fitter, fitter_config, method):
+    """Apply the correction if asked, and say which was done ("" when
+    the fit is not affected). Call right after fitter.fit()."""
+    if not llh_errors_inflated(fitter_config):
+        return ""
+    vary = [par for par in fitter.result.params.values()
+            if par.vary and not par.expr]
+    none = bool(vary) and not any(
+        par.stderr is not None and np.isfinite(par.stderr)
+        and par.stderr > 0 for par in vary)
+    if none:
+        return (f"lmfit could not estimate any error bars for this "
+                f"{method} fit (the numerical Hessian failed); use emcee "
+                f"for the uncertainties.")
+    why = (f"{method}'s error bars come from lmfit's numerical "
+           f"covariance, 2 x inverse(Hessian), which assumes a "
+           f"chi-square; under a likelihood satlas2 minimises -ln L, "
+           f"half of one.")
+    if fitter_config.get("llh_error_correction"):
+        _correct_llh_errors(fitter)
+        return (f"Error bars divided by sqrt(2): {why} (Fitter block: "
+                f"'Correct likelihood error bars' is on.)")
+    return (f"Error bars are sqrt(2) too large and NOT corrected: {why} "
+            f"Tick 'Correct likelihood error bars' in the Fitter block to "
+            f"divide them by sqrt(2), or use emcee.")
+
+
 def _resolve_fit_yerr(yerr, y, use_callable_yerr):
     """Resolve the per-bin uncertainty array passed to ``satlas2.Source``.
 
@@ -244,6 +377,116 @@ def _genuine_chisq(y, y_fit, yerr, n_data, n_vary):
     chisqr = float(np.sum(r * r))
     dof = max(1, int(n_data or len(y)) - int(n_vary or 0))
     return chisqr, chisqr / dof
+
+
+def _residual_statistics(y, y_fit, yerr, n_vary):
+    """Fit statistics recomputed from the residuals.
+
+    For a fit whose objective was a likelihood -- Poisson/Gaussian LLH,
+    and every emcee fit, which always samples one -- satlas2's own
+    numbers are not a chi-square. Under emcee they are worse: lmfit
+    evaluates the objective once at the medians, gets the summed
+    log-likelihood as a single number, and reports "1 data point" and
+    chisqr = (ln L)^2 (a 1.7 fit came out as reduced chi-square
+    181134, 2026-09-25). These use the real bins and lmfit's own
+    definitions, so every objective reports the same kind of number:
+    AIC = n ln(chi2/n) + 2k, BIC = n ln(chi2/n) + k ln n.
+    """
+    y = np.asarray(y, dtype=float)
+    y_fit = np.asarray(y_fit, dtype=float)
+    yerr = np.asarray(yerr, dtype=float)
+    ok = (np.isfinite(y) & np.isfinite(y_fit) & np.isfinite(yerr)
+          & (yerr > 0))
+    n = int(ok.sum())
+    k = int(n_vary or 0)
+    r = (y[ok] - y_fit[ok]) / yerr[ok]
+    chisqr = float(np.sum(r * r))
+    nfree = max(1, n - k)
+    if n > 0:
+        _c = max(chisqr, 1e-250) / n
+        aic = float(n * np.log(_c) + 2 * k)
+        bic = float(n * np.log(_c) + np.log(n) * k)
+    else:
+        aic = bic = float("nan")
+    return {"ndata": n, "nvarys": k, "nfree": nfree, "chisqr": chisqr,
+            "redchi": chisqr / nfree, "aic": aic, "bic": bic}
+
+
+_REPORT_STAT_LINES = (("# data points", "ndata"),
+                      ("chi-square", "chisqr"),
+                      ("reduced chi-square", "redchi"),
+                      ("Akaike info crit", "aic"),
+                      ("Bayesian info crit", "bic"))
+RESIDUAL_STATS_NOTE = ("(statistics recomputed from the residuals: this "
+                       "fit used a likelihood, whose own numbers are not "
+                       "a chi-square)")
+
+
+def _rewrite_fit_statistics(report, stats):
+    """Put ``stats`` into the [[Fit Statistics]] lines of an lmfit report.
+
+    Only the value after '=' changes, so the layout and the order of
+    the report stay as they were; a note says where the numbers came
+    from. A report without those lines is returned unchanged.
+    """
+    if not report or "[[Fit Statistics]]" not in report:
+        return report
+    try:
+        from lmfit.printfuncs import gformat
+    except Exception:                                   # pragma: no cover
+        def gformat(v, length=11):
+            return f"{v:.9g}"
+    lines = report.splitlines()
+    last = None
+    for i, line in enumerate(lines):
+        head, sep, _val = line.partition("=")
+        if not sep:
+            continue
+        label = head.strip()
+        for name, key in _REPORT_STAT_LINES:
+            if label == name:
+                v = stats[key]
+                txt = str(v) if key == "ndata" else gformat(v, 11).strip()
+                lines[i] = f"{head}= {txt}"
+                last = i
+    if last is not None and RESIDUAL_STATS_NOTE not in report:
+        indent = lines[last][:len(lines[last]) - len(lines[last].lstrip())]
+        lines.insert(last + 1, indent + RESIDUAL_STATS_NOTE)
+    return "\n".join(lines)
+
+
+def _add_background_model(sat_module, source, params, bkg_name):
+    """Build the background polynomial for one model and add it.
+
+    Reads however many ``Bkg_p<N>`` rows the Model block exposes:
+    ``Bkg_p0`` alone is the flat background every model used to have,
+    ``Bkg_p0`` + ``Bkg_p1`` a sloped baseline, and so on.
+
+    satlas2's ``Polynomial`` names its parameters ``p{len(p)-(i+1)}``
+    and evaluates through ``np.polyval``, so the list it takes is
+    HIGHEST power first -- the reverse of the ``Bkg_p0, Bkg_p1, ...``
+    order the UI shows. Getting that backwards silently swaps the
+    offset for the slope, so the reversal happens here, once
+    (2026-09-20).
+    """
+    names = background_coefficients(params)
+    if not names:
+        names = ["Bkg_p0"]          # every such model has a background
+    coeffs = [float(params.get(n, {}).get("value", 0) or 0)
+              for n in names]
+    bkg = sat_module.Polynomial(list(reversed(coeffs)), name=bkg_name)
+    for n in names:
+        key = bkg_param_key(n)           # "Bkg_p1" -> "p1"
+        if key not in bkg.params:
+            continue
+        p = params.get(n, {})
+        bkg.params[key].vary = p.get("vary", True)
+        if p.get("min") is not None:
+            bkg.params[key].min = p["min"]
+        if p.get("max") is not None:
+            bkg.params[key].max = p["max"]
+    source.addModel(bkg)
+    return bkg
 
 
 def _extract_correction(centroid_correction):
@@ -303,6 +546,11 @@ def _merged_run_metadata(merged_data):
             continue
         constituents.append({
             "ts_start": ts,
+            # The window the reference estimate was averaged over,
+            # and which run it belongs to -- both needed by the IS
+            # tab's centroid diagnostic (2026-09-21).
+            "ts_stop": float(p.get("ts_stop", 0) or 0),
+            "run_num": str(p.get("run_num", "") or ""),
             "centroid_correction_mhz": mhz,
             "centroid_correction_sigma_mhz": sig,
             "centroid_correction_mode": mode,
@@ -417,6 +665,40 @@ def _patch_satlas2_emcee_numpy2():
 #  Shared model-building helper (top-level for picklability)
 # ══════════════════════════════════════════════════════════════════
 
+#: The Model block stores "no limit" as -1e12 / +1e12 (a limit only
+#: counts as set inside +-1e11: helpers._BoundsButton). Passed on as a
+#: number, lmfit treats it as a real bound and fits that parameter in its
+#: bounded internal coordinate; across a 2e12 range the numerical
+#: Hessian's fixed step becomes ~1e8 MHz, so every nelder / powell error
+#: estimate on run 7507 failed and left no error bars at all (2026-09-26).
+#: No fit ever reaches such a bound, so +-inf is what the UI means --
+#: and it is what it shows ("-inf" / "inf").
+_NO_LIMIT = 1e11
+
+
+def _unset_sentinel_bounds(model_configs):
+    """Copies of the model configs with "no limit" bounds as +-inf.
+
+    Explicitly infinite rather than dropped: a dropped bound would fall
+    back to satlas2's own default (e.g. a width's minimum of 0), which
+    is not what an unticked limit means.
+    """
+    out = []
+    for mc in model_configs:
+        params = {}
+        for name, p in (mc.get("params") or {}).items():
+            if isinstance(p, dict):
+                p = dict(p)
+                lo, hi = p.get("min"), p.get("max")
+                if lo is not None and lo <= -_NO_LIMIT:
+                    p["min"] = -np.inf
+                if hi is not None and hi >= _NO_LIMIT:
+                    p["max"] = np.inf
+            params[name] = p
+        out.append(dict(mc, params=params))
+    return out
+
+
 def _build_models_on_source(source, model_configs, sat_module):
     """Build all models from *model_configs* on a satlas2 Source.
 
@@ -439,6 +721,7 @@ def _build_models_on_source(source, model_configs, sat_module):
         Decay).  Polynomial models are excluded.
     """
     model_names_map = {}
+    model_configs = _unset_sentinel_bounds(model_configs)
 
     for mc in model_configs:
         mt = mc["type"]
@@ -495,14 +778,9 @@ def _build_models_on_source(source, model_configs, sat_module):
             source.addModel(hfs)
             model_names_map[mc_safe_name] = hfs
 
-            # Background polynomial
-            bkg_val = params.get("Bkg_p0", {}).get("value", 0)
             bkg_name = f"{mc_safe_name}_bkg"
-            bkg = sat_module.Polynomial([bkg_val], name=bkg_name)
-            bkg.params["p0"].vary = params.get("Bkg_p0", {}).get(
-                "vary", True)
-            source.addModel(bkg)
-            model_names_map[bkg_name] = bkg
+            model_names_map[bkg_name] = _add_background_model(
+                sat_module, source, params, bkg_name)
 
         elif mt == "Voigt":
             voigt = sat_module.Voigt(
@@ -521,11 +799,8 @@ def _build_models_on_source(source, model_configs, sat_module):
             source.addModel(voigt)
             model_names_map[mc_safe_name] = voigt
 
-            bkg_val = params.get("Bkg_p0", {}).get("value", 0)
-            bkg = sat_module.Polynomial(
-                [bkg_val], name=f"{mc_safe_name}_bkg")
-            bkg.params["p0"].vary = params.get("Bkg_p0", {}).get("vary", True)
-            source.addModel(bkg)
+            _add_background_model(sat_module, source, params,
+                                  f"{mc_safe_name}_bkg")
 
         elif mt == "Skewed Voigt":
             sv = sat_module.SkewedVoigt(
@@ -545,11 +820,8 @@ def _build_models_on_source(source, model_configs, sat_module):
             source.addModel(sv)
             model_names_map[mc_safe_name] = sv
 
-            bkg_val = params.get("Bkg_p0", {}).get("value", 0)
-            bkg = sat_module.Polynomial(
-                [bkg_val], name=f"{mc_safe_name}_bkg")
-            bkg.params["p0"].vary = params.get("Bkg_p0", {}).get("vary", True)
-            source.addModel(bkg)
+            _add_background_model(sat_module, source, params,
+                                  f"{mc_safe_name}_bkg")
 
         elif mt == "Exponential Decay":
             ed = sat_module.ExponentialDecay(
@@ -664,6 +936,7 @@ def _fit_single_run(run_file_path, source_config, model_configs, fitter_config,
 
     binning_info = None
     tof_hist = None   # set in the standard ASDF branch; None for merged
+    eff_cfg = None    # ditto: a pre-merged spectrum has no per-run gate cfg
 
     try:
         # 1. Load & bin data (or use pre-merged spectrum)
@@ -697,6 +970,31 @@ def _fit_single_run(run_file_path, source_config, model_configs, fitter_config,
             # warnings so the fit-report header surfaces both.
             for w in merged_data.get("merge_warnings", []) or []:
                 extra_warnings.append(dict(w))
+            # A rest-frame detuning axis lives within a few GHz of the
+            # reference. A merged spectrum sitting orders of magnitude
+            # away was built in a DIFFERENT Doppler frame than the one
+            # this fit assumes -- e.g. a merge made while the cooler/
+            # laser override or the energy levels differed. The fit
+            # would otherwise "succeed" with a flat model no parameter
+            # could reach, so say so loudly instead (2026-09-20).
+            if effective_x_unit == "MHz" and len(x):
+                _far_mhz = float(np.max(np.abs(x)))
+                if _far_mhz > 1.0e6:
+                    extra_warnings.append({
+                        "code": "MERGED_AXIS_FAR_FROM_REFERENCE",
+                        "level": "warning",
+                        "run": merged_data.get("merged_name"),
+                        "message": (
+                            f"Merged spectrum sits {_far_mhz:.3g} MHz from "
+                            "the reference frequency -- far outside any "
+                            "real CLS detuning. The merge was almost "
+                            "certainly built with different physics "
+                            "parameters (energy levels, harmonic, or the "
+                            "cooler/laser override) than this Source "
+                            "block now uses. Re-create the merge "
+                            "(right-click the merged entry -> Edit...) "
+                            "before trusting this fit."),
+                    })
             source_name = source_name_for_merged(merged_data)
             run_num = source_name[len("Run_"):]
             use_callable_yerr = False
@@ -868,7 +1166,10 @@ def _fit_single_run(run_file_path, source_config, model_configs, fitter_config,
                                      prior["value"], prior["uncertainty"])
 
         # 4. Fit
-        fit_kwargs = {"method": fitter_config["method"],
+        _method, _llh_note = resolve_llh_method(fitter_config)
+        if _llh_note:
+            print(f"[Fit] {_llh_note}", flush=True)
+        fit_kwargs = {"method": _method,
                       "scale_covar": fitter_config.get("scale_covar", True)}
         if fitter_config.get("llh"):
             fit_kwargs["llh"] = True
@@ -929,6 +1230,9 @@ def _fit_single_run(run_file_path, source_config, model_configs, fitter_config,
             fit_kwargs["iter_cb"] = _iter_cb
 
         fitter.fit(**fit_kwargs)
+        _err_note = _llh_error_note(fitter, fitter_config, _method)
+        if _err_note:
+            print(f"[Fit] {_err_note}", flush=True)
         # Mark this run as done so the poller doesn't sit at 95%.
         if progress_queue is not None:
             try:
@@ -954,6 +1258,17 @@ def _fit_single_run(run_file_path, source_config, model_configs, fitter_config,
         report = fitter.reportFit(
             show_correl=fitter_config.get("show_correl", True),
             min_correl=fitter_config.get("min_correl", 0.1))
+        if _llh_note:
+            # In the report as well as the log: whoever reads the fit
+            # months later should see that the minimiser they picked
+            # is not the one that ran.
+            report = f"[Minimiser] {_llh_note}\n\n" + report
+        if _err_note:
+            # After [Minimiser] when both are there: the order they
+            # happened in.
+            _head = f"[Minimiser] {_llh_note}\n\n" if _llh_note else ""
+            report = (_head + f"[Errors] {_err_note}\n\n"
+                      + report[len(_head):])
         if emcee_acor:
             _acor_lines = "\n".join(
                 f"    {k}: {v:.1f}" for k, v in emcee_acor.items())
@@ -981,19 +1296,24 @@ def _fit_single_run(run_file_path, source_config, model_configs, fitter_config,
         # from the residuals so "Reduced Chi-sq" stays meaningful; the default
         # chi-square fit is unaffected (code review 2026-06-02,
         # llh-redchi-mislabeled).
-        if fitter_config.get("llh"):
+        # emcee always samples a likelihood (Gaussian for "Chi-square"),
+        # so it needs the same treatment -- see _residual_statistics.
+        if fitter_config.get("llh") or fitter_config["method"] == "emcee":
             _yq = source.evaluate(x)
             _eq = (np.sqrt(np.maximum(_yq, 1.0))
                    if use_callable_yerr else yerr)
-            _cx, _rc = _genuine_chisq(y, _yq, _eq,
-                                      fit_quality["ndata"],
-                                      fit_quality["nvarys"])
-            fit_quality["chisqr"] = _cx
-            fit_quality["redchi"] = _rc
+            _st = _residual_statistics(y, _yq, _eq, fit_quality["nvarys"])
+            fit_quality["chisqr"] = _st["chisqr"]
+            fit_quality["redchi"] = _st["redchi"]
+            fit_quality["ndata"] = _st["ndata"]
             fit_quality["gof_from_residuals"] = True
-            for _col, _val in (("Chisquare", _cx), ("Redchi", _rc)):
+            for _col, _key in (("Data points", "ndata"),
+                               ("Chisquare", "chisqr"),
+                               ("Redchi", "redchi"),
+                               ("Aic", "aic"), ("Bic", "bic")):
                 if _col in metadata_df.columns:
-                    metadata_df[_col] = _val
+                    metadata_df[_col] = _st[_key]
+            report = _rewrite_fit_statistics(report, _st)
 
         x_smooth, _smooth_gap_mask = _smooth_grid_with_gaps(x)
         y_fit = source.evaluate(x)
@@ -1068,13 +1388,20 @@ def _fit_single_run(run_file_path, source_config, model_configs, fitter_config,
                         var_labels = [var_labels[j] for j in sel]
                         var_chain = var_chain[:, :, sel]
 
+                _post, _burn_used = posterior_slice(
+                    var_chain, fitter_config.get("burn", 0),
+                    fitter_config.get("thin", 1))
                 if output_config.get("walk_plot"):
                     diagnostics["walk_data"] = {
                         "labels": var_labels,
                         "chain": var_chain,
+                        # the step the reported values start at
+                        "burn": int(_burn_used),
                     }
                 if output_config.get("correl_plot"):
-                    flat = var_chain.reshape((-1, len(var_labels)))
+                    # The samples the values were computed from: the
+                    # burn-in transient would smear every region.
+                    flat = _post.reshape((-1, len(var_labels)))
                     diagnostics["correl_data"] = {
                         "labels": var_labels,
                         "flatchain": flat,
@@ -1097,6 +1424,11 @@ def _fit_single_run(run_file_path, source_config, model_configs, fitter_config,
                     g = hf["mcmc"]
                     full_chain = g["chain"][:]     # (steps, walkers, ndim)
                     labels_raw = list(g.attrs["labels"])
+                # The band is the spread of the posterior the values
+                # come from -- not of the walkers' way there.
+                full_chain, _ = posterior_slice(
+                    full_chain, fitter_config.get("burn", 0),
+                    fitter_config.get("thin", 1))
                 nsteps, nwalkers, ndim = full_chain.shape
                 target_samples = output_config.get("band_samples", 200)
                 thin = max(1, (nsteps * nwalkers) // target_samples)
@@ -1212,14 +1544,19 @@ def _fit_single_run(run_file_path, source_config, model_configs, fitter_config,
             "fwhm": model_fwhm,
             "peak_positions": model_positions,
             "chain_file": fit_kwargs.get("filename"),
+            "mcmc_burn": int(fitter_config.get("burn", 0) or 0),
+            "mcmc_thin": int(fitter_config.get("thin", 1) or 1),
             "fit_quality": fit_quality,
             "run_metadata": (run_metadata if not merged_data
                              else _merged_run_metadata(merged_data)),
             "harmonic": source_config.get("harmonic", 0),
             "binning_info": binning_info,
             "tof_hist": tof_hist,
-            "tof_gate": list(eff_cfg.get("tof_gate"))
-                        if eff_cfg.get("tof_gate") else None,
+            # eff_cfg is None for a merged spectrum (its gating happened
+            # at merge time), so guard before reading -- this crashed
+            # every merged-run fit with UnboundLocalError (2026-09-20).
+            "tof_gate": (list(eff_cfg["tof_gate"])
+                         if eff_cfg and eff_cfg.get("tof_gate") else None),
         }
 
     except Exception as e:
@@ -1247,6 +1584,7 @@ class FitWorkerThread(QThread):
                  split_descriptors_map=None,
                  file_overrides_map=None, centroid_corrections_map=None,
                  scan_filters_map=None, calibrations_map=None,
+                 model_configs_map=None,
                  parent=None):
         super().__init__(parent)
         self.run_files = run_files
@@ -1276,6 +1614,14 @@ class FitWorkerThread(QThread):
         # a "borrow" spec has to resolve its donor run, which may not be
         # among the files being fitted.
         self.calibrations_map = calibrations_map or {}
+        # Per-file STARTING values: a full model_configs list
+        # for one run, replacing the shared one. The systematic
+        # scan seeds every run from its own previous fit, which
+        # is the difference between a fit that converges at the
+        # far end of an offset scan and one that does not.
+        # Empty map (every other caller) = the shared configs
+        # for every run, exactly as before.
+        self.model_configs_map = model_configs_map or {}
         self._cancelled = False
 
     def cancel(self):
@@ -1381,9 +1727,11 @@ class FitWorkerThread(QThread):
                         sf_key = filepath
                     sf = (self.scan_filters_map.get(sf_key)
                           if sf_key else None)
+                    mcfg = self.model_configs_map.get(
+                        filepath, self.model_configs)
                     future = pool.submit(
                         _fit_single_run, filepath,
-                        self.source_config, self.model_configs,
+                        self.source_config, mcfg,
                         self.fitter_config, self.output_config,
                         merged_data=merged,
                         split_descriptor=split,
@@ -1700,7 +2048,11 @@ class FitWorkerThread(QThread):
                 d["yerr"] = _resolve_fit_yerr(d["yerr"], d["y"], False)
                 source = sat.Source(d["x"], d["y"], yerr=d["yerr"],
                                     xerr=d["xerr"], name=d["name"])
-                _build_models_on_source(source, self.model_configs, sat)
+                _build_models_on_source(
+                    source,
+                    self.model_configs_map.get(
+                        d["filepath"], self.model_configs),
+                    sat)
                 fitter.addSource(source)
                 source_objects[d["name"]] = {
                     "source": source, "x": d["x"], "y": d["y"],
@@ -1755,7 +2107,10 @@ class FitWorkerThread(QThread):
             self.progress.emit(0, 100, "Fitting all sources simultaneously...")
 
             # Fit
-            fit_kwargs = {"method": self.fitter_config["method"],
+            _method, _llh_note = resolve_llh_method(self.fitter_config)
+            if _llh_note:
+                print(f"[Fit] {_llh_note}", flush=True)
+            fit_kwargs = {"method": _method,
                           "scale_covar": self.fitter_config.get(
                               "scale_covar", True)}
             if self.fitter_config.get("llh"):
@@ -1823,6 +2178,9 @@ class FitWorkerThread(QThread):
             if self._cancelled:
                 # Aborted via iter_cb above; don't emit a partial/aborted fit.
                 return
+            _err_note = _llh_error_note(fitter, self.fitter_config, _method)
+            if _err_note:
+                print(f"[Fit] {_err_note}", flush=True)
 
             # emcee MinimizerResult may lack 'message' -- set a fallback
             if not hasattr(fitter.result, 'message'):
@@ -1838,6 +2196,12 @@ class FitWorkerThread(QThread):
 
             report = fitter.reportFit(
                 show_correl=self.fitter_config.get("show_correl", True))
+            if _llh_note:
+                report = f"[Minimiser] {_llh_note}\n\n" + report
+            if _err_note:
+                _head = f"[Minimiser] {_llh_note}\n\n" if _llh_note else ""
+                report = (_head + f"[Errors] {_err_note}\n\n"
+                          + report[len(_head):])
             if emcee_acor:
                 _acor_lines = "\n".join(
                     f"    {k}: {v:.1f}" for k, v in emcee_acor.items())
@@ -1883,13 +2247,17 @@ class FitWorkerThread(QThread):
                             var_labels = [var_labels[j] for j in sel]
                             var_chain = var_chain[:, :, sel]
 
+                    _post, _burn_used = posterior_slice(
+                        var_chain, self.fitter_config.get("burn", 0),
+                        self.fitter_config.get("thin", 1))
                     if self.output_config.get("walk_plot"):
                         diagnostics["walk_data"] = {
                             "labels": var_labels,
                             "chain": var_chain,
+                            "burn": int(_burn_used),
                         }
                     if self.output_config.get("correl_plot"):
-                        flat = var_chain.reshape((-1, len(var_labels)))
+                        flat = _post.reshape((-1, len(var_labels)))
                         diagnostics["correl_data"] = {
                             "labels": var_labels,
                             "flatchain": flat,
@@ -1959,27 +2327,35 @@ class FitWorkerThread(QThread):
             # all sources' residuals so "Reduced Chi-sq" stays meaningful; the
             # chi-square fit is unaffected (code review 2026-06-02,
             # llh-redchi-mislabeled).
-            if self.fitter_config.get("llh"):
-                _tot = 0.0
+            # emcee always samples a likelihood, so it is included; the
+            # bins of every source are pooled (see _residual_statistics).
+            if (self.fitter_config.get("llh")
+                    or self.fitter_config["method"] == "emcee"):
+                _ys, _fs, _es = [], [], []
                 for _sd in source_objects.values():
                     _xx = np.asarray(_sd["x"], dtype=float)
-                    _yy = np.asarray(_sd["y"], dtype=float)
                     _yf = _sd["source"].evaluate(_xx)
                     _ye = _sd["yerr"]
                     if callable(_ye):
                         _ye = np.sqrt(np.maximum(_yf, 1.0))
-                    _ye = np.asarray(_ye, dtype=float)
-                    _r = (_yy - _yf) / _ye
-                    _tot += float(np.sum(_r * _r))
-                _dof = max(1, int(fit_quality["ndata"] or 0)
-                           - int(fit_quality["nvarys"] or 0))
-                fit_quality["chisqr"] = _tot
-                fit_quality["redchi"] = _tot / _dof
+                    _ys.append(np.asarray(_sd["y"], dtype=float))
+                    _fs.append(np.asarray(_yf, dtype=float))
+                    _es.append(np.asarray(_ye, dtype=float)
+                               * np.ones_like(_ys[-1]))
+                _st = _residual_statistics(
+                    np.concatenate(_ys), np.concatenate(_fs),
+                    np.concatenate(_es), fit_quality["nvarys"])
+                fit_quality["chisqr"] = _st["chisqr"]
+                fit_quality["redchi"] = _st["redchi"]
+                fit_quality["ndata"] = _st["ndata"]
                 fit_quality["gof_from_residuals"] = True
-                for _col, _val in (("Chisquare", _tot),
-                                   ("Redchi", _tot / _dof)):
+                for _col, _key in (("Data points", "ndata"),
+                                   ("Chisquare", "chisqr"),
+                                   ("Redchi", "redchi"),
+                                   ("Aic", "aic"), ("Bic", "bic")):
                     if _col in metadata_df.columns:
-                        metadata_df[_col] = _val
+                        metadata_df[_col] = _st[_key]
+                report = _rewrite_fit_statistics(report, _st)
 
             # Build per-source results
             results = []
@@ -2036,6 +2412,10 @@ class FitWorkerThread(QThread):
                     "peak_positions": model_positions,
                     "fit_quality": fit_quality,
                     "chain_file": fit_kwargs.get("filename"),
+                    "mcmc_burn": int(
+                        self.fitter_config.get("burn", 0) or 0),
+                    "mcmc_thin": int(
+                        self.fitter_config.get("thin", 1) or 1),
                     "run_metadata": sdata.get("run_metadata", {}),
                     "harmonic": self.source_config.get("harmonic", 0),
                     "binning_info": sdata.get("binning_info"),

@@ -120,7 +120,11 @@ class GetReferenceObservationsTests(unittest.TestCase):
         self.assertEqual(len(obs), 2)
         self.assertAlmostEqual(obs[0]["centroid_mhz"], 100.0)
         self.assertAlmostEqual(obs[0]["sigma_mhz"], 1.0)
-        self.assertEqual(obs[0]["label"], "run_1.asdf")
+        # The run NUMBER, not the file name: a result reloaded from
+        # disk has no run_file, so a file-based label changed across a
+        # reload and GP exclusions keyed on it stopped matching
+        # (2026-09-22). The file is still carried in run_file.
+        self.assertEqual(obs[0]["label"], "1")
         self.assertEqual(obs[0]["run_file"], "/x/run_1.asdf")
         self.assertTrue(obs[0]["include"])
         self.assertAlmostEqual(obs[1]["centroid_mhz"], 101.5)

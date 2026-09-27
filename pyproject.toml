@@ -1,6 +1,6 @@
 [project]
 name = "denis"
-version = "1.0.0"
+version = "1.1.0"
 description = "Doppler Estimation and Numerical Inference for Spectroscopy"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -55,6 +55,15 @@ from gui.analysis.reference_correction_panel import (
 #  Helper: per-isotope entry row data
 # ═══════════════════════════════════════════════════════════════════
 
+#: Runs-selector option meaning "this isotope's centroid comes from
+#: the GP drift curve, not from any run". Only meaningful for the
+#: reference: once the correction is applied, every sample centroid
+#: is already a shift against that curve, so the reference is zero
+#: by construction and contributes no measurement error of its own
+#: (its uncertainty already rides in each sample's sigma_correction).
+GP_REFERENCE = "GP drift model"
+
+
 class _IsotopeEntry:
     """Lightweight container for one row in the isotope table."""
     __slots__ = (
@@ -130,20 +139,26 @@ class IsotopeShiftTab(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Handle kept so the layout can be saved / restored.
+        self._main_splitter = splitter
         root.addWidget(splitter)
+        # Controls keep their width, the plot takes the slack -- the
+        # same balance the Reference Correction tab uses.
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
 
         # ════════════ LEFT PANEL (controls) ════════════
-        # Two-subtab split: "Setup" carries the entries / systematics /
-        # action buttons; "Reference Correction (GP)" hosts the GP
-        # panel on its own. Keeping the action row in the Setup tab
-        # means Compute Shifts is visible without scrolling past the
-        # tall GP panel.
+        # One subtab now: "Setup" carries the entries / systematics /
+        # action buttons. The GP panel used to sit beside it but has
+        # its own project-level tab since 2026-09-20 -- this tab
+        # still constructs and owns it (below) for signals and
+        # save/load, it is simply parented elsewhere.
         left_tabs = QTabWidget()
-        # Minimum width chosen so the Isotope Entries table's columns
-        # (Sel / Project / Label / A / Runs / Centroid / Stat. Err.
-        # / Ref) all fit without an inner horizontal scrollbar at
-        # the default split.
-        left_tabs.setMinimumWidth(744)
+        # The minimum is set AFTER the table has measured its own
+        # columns (see _entries_min_width below). The old hardcoded
+        # 744 px pinned nearly half a 1920 px window to a form and
+        # left the plot -- the thing actually being read -- squeezed
+        # (2026-09-21).
 
         # ── "Setup" subtab (entries + systematics + actions) ──
         setup_scroll = QScrollArea()
@@ -166,23 +181,55 @@ class IsotopeShiftTab(QWidget):
         iso_lay = QVBoxLayout(iso_grp)
 
         self._iso_table = QTableWidget(0, 8)
+        # Every number in this table is MHz, so the unit lives in
+        # the header tooltips instead of widening the two numeric
+        # columns -- with eight columns those two decided how much of
+        # the window the form claimed (2026-09-21).
+        # Two-line headers: a column only needs the width of its
+        # widest LINE, so the units cost nothing.
         self._iso_table.setHorizontalHeaderLabels([
-            "Sel.", "Project", "Label", "A", "Runs",
-            "Centroid (MHz)", "Stat. Err.", "Ref",
+            "Use", "Project", "Isotope", "A", "Centroid\nfrom",
+            "Centroid\n(MHz)", "Stat. err\n(MHz)", "Ref.",
         ])
+        _hdr_tips = [
+            "Tick to include this isotope in the shift calculation.",
+            "Which Analysis project supplies this isotope's fits.",
+            "Name for this isotope in the plot, the table and the "
+            "exported CSV.",
+            "Mass number.",
+            "Where the centroid comes from:\n"
+            "  Weighted Average - inverse-variance average over the "
+            "project's fitted runs\n"
+            "  <run number> - that single run\n"
+            f"  {GP_REFERENCE} - the fitted drift curve itself, so "
+            "the row sits at exactly 0 in the corrected frame. Use "
+            "this for the REFERENCE isotope when the GP correction "
+            "is on.",
+            "Centroid in MHz. With the GP correction applied this is "
+            "already in the drift-free frame -- each run has had the "
+            "curve subtracted over its own acquisition window -- so "
+            "the reference belongs near zero.",
+            "Statistical uncertainty on the centroid, in MHz: the "
+            "fit error, Birge-inflated when several runs are "
+            "averaged. Systematics are added separately below.",
+            "The isotope every shift is measured against. Exactly "
+            "one row can be the reference.",
+        ]
+        for _c, _tip in enumerate(_hdr_tips):
+            _hi = self._iso_table.horizontalHeaderItem(_c)
+            if _hi is not None:
+                _hi.setToolTip(_tip)
         h = self._iso_table.horizontalHeader()
         h.setStretchLastSection(False)
         for col in range(8):
             h.setSectionResizeMode(
                 col, QHeaderView.ResizeMode.Interactive)
-        h.resizeSection(0, 40)   # Sel.
-        h.resizeSection(1, 110)  # Project
-        h.resizeSection(2, 80)   # Label
-        h.resizeSection(3, 70)   # A
-        h.resizeSection(4, 130)  # Runs
-        h.resizeSection(5, 130)  # Centroid (MHz)
-        h.resizeSection(6, 90)   # Stat. Err.
-        h.resizeSection(7, 40)   # Ref
+        # Each column is the wider of its header text and the widest
+        # value it can hold, measured at the font actually in use --
+        # hardcoded widths were either too wide (pinning half the
+        # window to a form) or too narrow (eliding the headers to
+        # ":el" and "entroid (MHz"). 2026-09-21.
+        self._measure_entry_columns()
         self._iso_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows)
         self._iso_table.setSelectionMode(
@@ -220,7 +267,7 @@ class IsotopeShiftTab(QWidget):
         self._preview_fig = Figure(dpi=100, constrained_layout=True)
         self._preview_ax = self._preview_fig.add_subplot(111)
         self._preview_canvas = FigureCanvasQTAgg(self._preview_fig)
-        self._preview_canvas.setFixedHeight(190)
+        self._preview_canvas.setFixedHeight(150)
         _pv_lay.addWidget(self._preview_canvas)
         self._preview_box.toggled.connect(
             self._preview_canvas.setVisible)
@@ -343,15 +390,17 @@ class IsotopeShiftTab(QWidget):
         setup_scroll.setWidget(left_widget)
         left_tabs.addTab(setup_scroll, "Setup")
 
-        # ── "Reference Correction (GP)" subtab ──
-        # The GP panel is tall (kernel form, ref list, diagnostic
-        # plot, sample list, corrections table) so wrap it in its
-        # own scroll area for narrow window heights.
+        # ── The Reference Correction (GP) panel ──
+        # Built here because this tab owns its signals and its
+        # save/load; displayed in its own tab next to the projects.
         self._ref_corr_panel = ReferenceCorrectionPanel(self._analysis_tab)
-        ref_scroll = QScrollArea()
-        ref_scroll.setWidgetResizable(True)
-        ref_scroll.setWidget(self._ref_corr_panel)
-        left_tabs.addTab(ref_scroll, "Reference Correction (GP)")
+        # "Send plot to Results" on the GP panel rides the same relay the
+        # IS tab uses (IsotopeShiftTab.results_ready -> AnalysisTab ->
+        # MainWindow -> ResultsTab.add_results).
+        self._ref_corr_panel.results_ready.connect(self.results_ready.emit)
+        # NOT added to left_tabs: AnalysisTab hosts it in its own
+        # tab. Left unparented here, so whoever adds it takes
+        # ownership.
 
         splitter.addWidget(left_tabs)
 
@@ -428,9 +477,89 @@ class IsotopeShiftTab(QWidget):
         self._log_text.setReadOnly(True)
         right.addTab(self._log_text, "Log")
 
+        # ── "Centroids" tab: how each shift was assembled ──
+        self._centroid_table = QTableWidget()
+        self._centroid_table.setColumnCount(10)
+        self._centroid_table.setHorizontalHeaderLabels([
+            "Isotope", "Run", "Kind", "Start\n(h)", "Duration\n(s)",
+            "Weight", "Ref \u03bc\n(MHz)", "Ref \u03c3\n(MHz)",
+            "Applied\n(MHz)", "Centroid\n(MHz)",
+        ])
+        _cd_tips = [
+            "The isotope-shift entry this line contributes to.",
+            "Run number, or 'combined' for the weighted result that "
+            "is actually used as this isotope's reference.",
+            "single - one run.\n"
+            "merged - one constituent of a merged spectrum; each "
+            "gets its own reference estimate because they were taken "
+            "at different times.\n"
+            "weighted - the combination of the lines above.",
+            "Start of this run's acquisition, in hours since the "
+            "FIRST REFERENCE MEASUREMENT -- the same origin the "
+            "drift plot uses, so rows are comparable across "
+            "isotopes.",
+            "How long the run acquired for. The reference estimate "
+            "is the GP averaged over this whole window, not its "
+            "value at the start: on a 33-minute run those differ by "
+            "4.4 MHz.",
+            "Share this run carries in the combination. For a merged "
+            "spectrum it is the run's fraction of the total counts, "
+            "because the merged peak position is itself a "
+            "count-weighted blend of its constituents.",
+            "Reference centroid the GP predicts for this run's "
+            "window, computed now. This is what should be "
+            "subtracted.",
+            "1-sigma on that prediction. The combined row propagates "
+            "these through the same weights, in quadrature.",
+            "What the last FIT actually subtracted, if anything. "
+            "Blank means this run was fitted without a correction; a "
+            "value differing from Ref mu means the fit is stale and "
+            "wants re-running.",
+            "The isotope's centroid after correction, in MHz -- "
+            "shown once per isotope, on the combined row.",
+        ]
+        for _c, _tip in enumerate(_cd_tips):
+            _hi = self._centroid_table.horizontalHeaderItem(_c)
+            if _hi is not None:
+                _hi.setToolTip(_tip)
+        self._centroid_table.setToolTip(
+            "How each isotope shift was assembled. One line per "
+            "contributing run -- its acquisition window, the share "
+            "it carries, and the reference centroid the GP predicts "
+            "for that window -- then a bold combined line with the "
+            "reference actually subtracted.\n\n"
+            "Fills when you press Compute Shifts.")
+        self._centroid_table.verticalHeader().setVisible(False)
+        self._centroid_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
+        self._centroid_table.setAlternatingRowColors(True)
+        _ch = self._centroid_table.horizontalHeader()
+        _ch.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        _ch.setStretchLastSection(True)
+        right.addTab(self._centroid_table, "Centroids")
+        self._centroid_rows = []
+        self._populate_centroid_table()
+        # Now the table has measured itself: the controls claim only
+        # the width their columns need and the plot takes the rest.
+        # A saved ui_layout overrides this on load.
+        _min_left = getattr(self, "_entries_min_width", 620)
+        left_tabs.setMinimumWidth(_min_left)
+        self._left_tabs = left_tabs
+
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
+        # Neither pane may collapse. A collapsed QSplitter pane stays
+        # at 0 through every later resize, which is how the plot
+        # vanished (2026-09-22); the plot also gets a floor.
+        splitter.setChildrenCollapsible(False)
+        right.setMinimumWidth(360)
+        # The controls keep their width and the plot takes the slack
+        # when the window grows.
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        # The actual split is decided on first show, when the width
+        # is real (see showEvent); sizing it here would size a hidden
+        # page at its construction-time width.
+        self._split_initialised = False
 
     # ═══════════════════════════════════════════════════════════════
     #  Plot options dialog
@@ -689,11 +818,31 @@ class IsotopeShiftTab(QWidget):
         # Column 4 - Run selection
         e.run_combo = QComboBox()
         e.run_combo.addItem("Weighted Average")
+        e.run_combo.addItem(GP_REFERENCE)
+        e.run_combo.setToolTip(
+            "Where this isotope's centroid comes from.\n\n"
+            "Weighted Average - inverse-variance average over the "
+            "project's fitted runs.\n"
+            "<run number> - that single run.\n"
+            f"{GP_REFERENCE} - the reference is the fitted drift "
+            "curve itself, so this row sits at exactly 0 in the "
+            "corrected frame. Use this for the REFERENCE isotope "
+            "whenever the GP correction is applied: the samples have "
+            "already had the curve subtracted over their own "
+            "acquisition windows, so subtracting a reference "
+            "measurement on top would take the reference level off "
+            "twice -- and make every shift depend on which reference "
+            "run you happened to pick.")
         if run_sel != "Weighted Average":
             e.run_combo.addItem(run_sel)
             e.run_combo.setCurrentText(run_sel)
         e.run_combo.currentTextChanged.connect(
             lambda _t, ent=e: self._update_run_preview(ent))
+        # The numbers move with the preview: stepping through runs
+        # with the arrow keys is how runs get compared, and the cells
+        # used to keep showing the previous run until Compute.
+        e.run_combo.currentTextChanged.connect(
+            lambda _t: self._update_centroids())
         self._iso_table.setCellWidget(row, 4, e.run_combo)
 
         # Column 5 - Centroid (read-only)
@@ -716,6 +865,9 @@ class IsotopeShiftTab(QWidget):
         e.ref_radio = QRadioButton()
         if is_ref:
             e.ref_radio.setChecked(True)
+        # Moving the reference to or from the GP changes the frame
+        # every other row is shown in.
+        e.ref_radio.toggled.connect(lambda _on: self._update_centroids())
         self._ref_group.addButton(e.ref_radio)
         self._iso_table.setCellWidget(row, 7, _centered_cell(e.ref_radio))
 
@@ -743,11 +895,29 @@ class IsotopeShiftTab(QWidget):
         results = (project._last_results or []) if project else []
         ok = [r for r in results if r.get("success")]
         r = None
-        if run_sel and run_sel != "Weighted Average":
+        note = ""
+        if run_sel == GP_REFERENCE:
+            # The curve is the reference; show the run the plot's
+            # reference panel shows, so the two agree.
+            r = self._best_reference_run(project, ok)
+            if r is not None:
+                run_sel = str(r.get("run_number", "?"))
+                note = "GP reference: most precise run, "
+        elif run_sel and run_sel != "Weighted Average":
             for cand in ok:
                 if str(cand.get("run_number")) == run_sel:
                     r = cand
                     break
+        # In GP mode every spectrum is judged in the drift-free frame,
+        # the same frame its centroid cell and the plot use.
+        shift = 0.0
+        if r is not None and self._gp_mode() and self._gp_corrector():
+            c_fit, _s = extract_centroid(r.get("params_df", {}))
+            if c_fit is not None:
+                shift = float(self._frame(project, r, c_fit)["shift"]
+                              or 0.0)
+                if shift:
+                    note += "drift-corrected   "
         if r is None:
             ax.set_title(
                 ("Weighted Average selected — pick a specific run to "
@@ -757,7 +927,7 @@ class IsotopeShiftTab(QWidget):
             self._preview_canvas.draw_idle()
             return
         try:
-            x = np.asarray(r.get("x", []), dtype=float)
+            x = np.asarray(r.get("x", []), dtype=float) - shift
             y = np.asarray(r.get("y", []), dtype=float)
             yerr = r.get("yerr")
             if x.size and y.size:
@@ -768,13 +938,13 @@ class IsotopeShiftTab(QWidget):
                                 color="#4477aa")
                 else:
                     ax.plot(x, y, ".", ms=3, alpha=0.7, color="#4477aa")
-            xs = np.asarray(r.get("x_smooth", []), dtype=float)
+            xs = np.asarray(r.get("x_smooth", []), dtype=float) - shift
             ys = np.asarray(r.get("y_fit_smooth", []), dtype=float)
             if xs.size and ys.size:
                 ax.plot(xs, ys, "-", lw=1.2, color="#cc3311")
         except Exception:
             pass
-        title = f"run {run_sel}"
+        title = f"{note}run {run_sel}"
         redchi = (r.get("fit_quality") or {}).get("redchi")
         if redchi is not None:
             try:
@@ -831,17 +1001,23 @@ class IsotopeShiftTab(QWidget):
             self._iso_table.removeRow(r)
 
     def _populate_project_combo(self, combo, current=""):
-        """Fill a project combo box from analysis sample projects.
+        """Fill a project combo box from the analysis projects.
 
-        Reference projects are excluded -- they don't represent
-        isotopes to compute shifts on; they feed the GP corrector
-        below.
+        Reference projects are INCLUDED: the reference isotope is
+        normally measured in a Reference Project (it feeds the GP
+        corrector), and the isotope shifts are quoted relative to it,
+        so it needs a row here too. Excluding it forced users to
+        convert the project to a Sample, refresh, tick Ref, and convert
+        back (2026-09-20).
         """
         combo.blockSignals(True)
         combo.clear()
         combo.addItem("")
         for p in self._analysis_tab._projects:
-            if p.is_reference:
+            # A Cooler Calibration project is Yb runs for calibrating
+            # the cooler voltage, not an isotope anyone wants a shift
+            # for.
+            if getattr(p, "is_calibration", False):
                 continue
             combo.addItem(p._project_name)
         if current and combo.findText(current) >= 0:
@@ -852,8 +1028,10 @@ class IsotopeShiftTab(QWidget):
         """When the project combo changes, update run combo and auto-fill."""
         project = self._find_project(entry.project_combo.currentText())
         entry.run_combo.blockSignals(True)
+        _keep = entry.run_combo.currentText()
         entry.run_combo.clear()
         entry.run_combo.addItem("Weighted Average")
+        entry.run_combo.addItem(GP_REFERENCE)
 
         if project:
             # Try in-memory results first, fall back to disk
@@ -872,6 +1050,12 @@ class IsotopeShiftTab(QWidget):
                 if not entry.label_edit.text():
                     entry.label_edit.setText(project._project_name)
                 entry.a_spin.setValue(cfg.get("A", 0))
+        # Keep the user's choice across a project change when it is
+        # still offered (GP drift model and Weighted Average always
+        # are; a run number may not survive).
+        _idx = entry.run_combo.findText(_keep)
+        if _idx >= 0:
+            entry.run_combo.setCurrentIndex(_idx)
         entry.run_combo.blockSignals(False)
 
     def _find_project(self, name):
@@ -896,168 +1080,9 @@ class IsotopeShiftTab(QWidget):
     # ═══════════════════════════════════════════════════════════════
 
     def _load_results_from_disk(self, project):
-        """Load fit results from the latest iteration on disk into
-        project._last_results so the IS tab can use them."""
-        from gui.shared_widgets import get_analysis_dir
-        base_dir = get_analysis_dir()
-        project_dir = os.path.join(base_dir, project._project_name)
-        if not os.path.isdir(project_dir):
-            return
-
-        # Find latest iteration
-        iters = sorted([d for d in os.listdir(project_dir)
-                        if os.path.isdir(os.path.join(project_dir, d))
-                        and d.startswith("iter_")])
-        if not iters:
-            return
-        iter_name = iters[-1]
-        iter_dir = os.path.join(project_dir, iter_name)
-
-        # Load parameters.csv
-        params_path = os.path.join(iter_dir, "parameters.csv")
-        if not os.path.isfile(params_path):
-            return
-
-        try:
-            import pandas as pd
-            params_df = pd.read_csv(params_path)
-        except Exception:
-            return
-
-        # Build results list from CSV + NPZ files
-        results = []
-        plots_dir = os.path.join(iter_dir, "plots")
-
-        # Group parameters by run_number
-        if "run_number" not in params_df.columns:
-            return
-        for run_num, grp in params_df.groupby("run_number"):
-            result = {
-                "success": True,
-                "run_number": str(run_num),
-                "run_file": "",
-                "report": "",
-                "params_df": {
-                    "Parameter": grp["Parameter"].tolist(),
-                    "Value": grp["Value"].tolist(),
-                    "Stderr": grp.get("Error",
-                                      grp.get("Stderr",
-                                              pd.Series([0.0] * len(grp))
-                                              )).tolist(),
-                },
-                "metadata_df": {},
-                "x": [], "y": [], "yerr": [],
-                "y_fit": [], "x_smooth": [], "y_fit_smooth": [],
-                "residuals": [],
-                "diagnostics": {},
-                "fwhm": {},
-                "peak_positions": {},
-                "fit_quality": {},
-                "run_metadata": {},
-                "harmonic": 0,
-            }
-            # Try loading NPZ for x/y data
-            npz_path = os.path.join(plots_dir, f"fit_run_{run_num}.npz")
-            if os.path.isfile(npz_path):
-                try:
-                    data = np.load(npz_path, allow_pickle=True)
-                    result["x"] = data.get("x", np.array([])).tolist()
-                    result["y"] = data.get("y", np.array([])).tolist()
-                    result["yerr"] = data.get("yerr",
-                                              np.array([])).tolist()
-                    result["x_smooth"] = data.get(
-                        "x_smooth", np.array([])).tolist()
-                    result["y_fit_smooth"] = data.get(
-                        "y_fit_smooth", np.array([])).tolist()
-                except Exception:
-                    pass
-
-            # Try loading run metadata from metadata.csv
-            meta_path = os.path.join(iter_dir, "metadata.csv")
-            if os.path.isfile(meta_path):
-                try:
-                    meta_df = pd.read_csv(meta_path)
-                    run_meta = meta_df[
-                        meta_df["run_number"].astype(str) == str(run_num)]
-                    if not run_meta.empty:
-                        result["fit_quality"] = {
-                            "redchi": run_meta.iloc[0].get(
-                                "Reduced Chi-sq", None),
-                        }
-                except Exception:
-                    pass
-
-            # Try loading run summary for cooler_v / timestamps
-            summary_path = os.path.join(iter_dir, "run_summary.csv")
-            if os.path.isfile(summary_path):
-                try:
-                    summary_df = pd.read_csv(summary_path)
-                    run_row = summary_df[
-                        summary_df["run_number"].astype(str)
-                        == str(run_num)]
-                    if not run_row.empty:
-                        rm = {}
-                        # Numeric metadata; row column name -> rm key
-                        numeric_cols = {
-                            "cooler_v": "cooler_v",
-                            "laser_set": "laser_set",
-                            "laser_set_cm1": "laser_set",
-                            "ts_start": "ts_start",
-                            "ts_stop": "ts_stop",
-                            "centroid_correction_mhz":
-                                "centroid_correction_mhz",
-                            "centroid_correction_sigma_mhz":
-                                "centroid_correction_sigma_mhz",
-                        }
-                        # Bool / string fields -- track separately
-                        # because pd.read_csv reads them differently.
-                        if "centroid_correction_applied" in (
-                                run_row.columns):
-                            v = run_row.iloc[0][
-                                "centroid_correction_applied"]
-                            if pd.notna(v):
-                                rm["centroid_correction_applied"] = (
-                                    bool(v) and str(v).lower()
-                                    not in ("false", "0", ""))
-                        if "centroid_correction_mode" in (
-                                run_row.columns):
-                            v = run_row.iloc[0][
-                                "centroid_correction_mode"]
-                            if pd.notna(v) and str(v):
-                                rm["centroid_correction_mode"] = str(v)
-                        # Restore the per-constituent correction list
-                        # for merged fits -- without this, σ_correction
-                        # propagation degrades to the mean(μ) +
-                        # RMS(σ) approximation after a save / reload
-                        # cycle.
-                        if "correction_constituents_json" in (
-                                run_row.columns):
-                            v = run_row.iloc[0][
-                                "correction_constituents_json"]
-                            if pd.notna(v) and str(v):
-                                try:
-                                    import json
-                                    rm["correction_constituents"] = (
-                                        json.loads(str(v)))
-                                except (ValueError, TypeError):
-                                    pass
-                        for col, key in numeric_cols.items():
-                            if col in run_row.columns:
-                                v = run_row.iloc[0][col]
-                                if pd.notna(v):
-                                    rm[key] = float(v)
-                        if "date" in run_row.columns:
-                            v = run_row.iloc[0]["date"]
-                            if pd.notna(v):
-                                rm["date"] = str(v)
-                        result["run_metadata"] = rm
-                except Exception:
-                    pass
-
-            results.append(result)
-
-        if results:
-            project._last_results = results
+        """Delegate: the loader lives on AnalysisProject so the GP
+        panel can reach it too (2026-09-21)."""
+        project.load_results_from_disk()
 
     # ═══════════════════════════════════════════════════════════════
     #  Refresh from projects
@@ -1066,9 +1091,10 @@ class IsotopeShiftTab(QWidget):
     def _refresh_projects(self):
         """Scan analysis projects and update / add rows.
 
-        Reference projects (``is_reference=True``) are skipped from the
-        isotope-shift table -- they feed the GP corrector instead, via
-        the Reference Correction panel below.
+        Reference projects get a row like any other and are marked as
+        the isotope-shift reference automatically -- being the
+        reference is exactly what the project kind means. An explicit
+        Ref choice already made by the user is never overridden.
         """
         existing_names = set()
         # Update existing rows
@@ -1080,14 +1106,19 @@ class IsotopeShiftTab(QWidget):
             if name:
                 existing_names.add(name)
 
-        # Add new rows for projects not yet in the table (sample only)
+        # Add new rows for projects not yet in the table
         for p in self._analysis_tab._projects:
-            if p.is_reference:
-                continue
+            if getattr(p, "is_calibration", False):
+                continue          # calibrates the voltage, not an isotope
             if p._project_name not in existing_names:
                 src = self._get_source_block(p)
                 A = src.get_source_config().get("A", 0) if src else 0
-                is_ref = len(self._entries) == 0  # first added = reference
+                # A Reference Project IS the reference; otherwise fall
+                # back to "first row added wins". The Ref radios share
+                # an exclusive QButtonGroup, so a later True clears the
+                # earlier one -- the reference project therefore wins
+                # regardless of creation order.
+                is_ref = bool(p.is_reference) or len(self._entries) == 0
                 self._add_row(
                     project_name=p._project_name,
                     label=p._project_name,
@@ -1095,59 +1126,392 @@ class IsotopeShiftTab(QWidget):
                     is_ref=is_ref,
                 )
 
+        # Rows restored from a save (or left over from before a project
+        # was converted to a Reference) can leave no Ref ticked at all;
+        # adopt the reference project then, without overriding a choice
+        # the user has already made.
+        if self._entries and not any(
+                e.ref_radio.isChecked() for e in self._entries):
+            ref_names = {p._project_name
+                         for p in self._analysis_tab._projects
+                         if p.is_reference}
+            target = next(
+                (e for e in self._entries
+                 if e.project_combo.currentText() in ref_names),
+                self._entries[0])
+            target.ref_radio.setChecked(True)
+
         # Reference Correction panel needs the same refresh trigger.
         if hasattr(self, "_ref_corr_panel"):
             self._ref_corr_panel.refresh_projects()
 
+        # Project names size the Project column.
+        self._measure_entry_columns()
         self._update_centroids()
 
-    def _update_centroids(self):
-        """Read centroid values from cached fit results."""
+    # ── GP drift-free frame ──────────────────────────────────
+
+    def _gp_mode(self):
+        """True when the reference row is the GP drift model.
+
+        In that mode every other row has to be in the drift-free
+        frame, whether or not its fit was corrected -- see
+        gui/analysis/gp_frame.py.
+        """
         for e in self._entries:
-            project = self._find_project(e.project_combo.currentText())
-            if not project or not project._last_results:
-                e.centroid_item.setText("no fit")
-                e.error_item.setText("--")
-                continue
+            if e.ref_radio.isChecked():
+                return e.run_combo.currentText() == GP_REFERENCE
+        return False
 
-            ok_results = [r for r in project._last_results
-                          if r.get("success")]
-            if not ok_results:
-                e.centroid_item.setText("failed")
-                e.error_item.setText("--")
-                continue
+    def _gp_corrector(self):
+        """The fitted GP, or None."""
+        panel = getattr(self, "_ref_corr_panel", None)
+        rc = getattr(panel, "corrector", None) if panel else None
+        if rc is None or not getattr(rc, "is_fit", False):
+            return None
+        return rc
 
-            run_sel = e.run_combo.currentText()
-            if run_sel == "Weighted Average":
-                vals, errs = [], []
-                for r in ok_results:
-                    c, s = extract_centroid(r.get("params_df", {}))
-                    if c is not None:
-                        vals.append(c)
-                        errs.append(s)
-                if vals:
-                    c, s = weighted_average(vals, errs)
-                    e.centroid_item.setText(f"{c:.4f}")
-                    e.error_item.setText(f"{s:.4f}")
-                else:
-                    e.centroid_item.setText("N/A")
-                    e.error_item.setText("--")
-            else:
-                # Specific run
-                for r in ok_results:
-                    if str(r.get("run_number", "")) == run_sel:
-                        c, s = extract_centroid(r.get("params_df", {}))
-                        if c is not None:
-                            e.centroid_item.setText(f"{c:.4f}")
-                            e.error_item.setText(f"{s:.4f}")
-                        else:
-                            e.centroid_item.setText("N/A")
-                            e.error_item.setText("--")
-                        break
+    def _frame(self, project, result, c_fit):
+        """gp_frame.frame_centroid for one result with the live GP."""
+        from gui.analysis.gp_frame import frame_centroid
+        return frame_centroid(self._gp_corrector(), project, result,
+                              c_fit,
+                              self._get_source_block(project)
+                              if project else None)
+
+    def _row_centroid(self, e, gp_mode):
+        """``(centroid_text, error_text, tooltip)`` for one row."""
+        run_sel = e.run_combo.currentText()
+        if run_sel == GP_REFERENCE:
+            # Zero by construction: the corrected frame's origin. Asked
+            # first -- the curve is the reference, so this row needs
+            # none of its project's fits.
+            return "0.0000", "0.0000", (
+                "The GP drift model is the reference: the origin of "
+                "the drift-free frame.")
+
+        project = self._find_project(e.project_combo.currentText())
+        if (project is not None and not project._last_results
+                and hasattr(project, "load_results_from_disk")):
+            # A reopened session has its fits on disk, not in memory.
+            try:
+                project.load_results_from_disk()
+            except Exception:  # noqa: BLE001
+                pass
+        if not project or not project._last_results:
+            return "no fit", "--", ""
+        ok_results = [r for r in project._last_results
+                      if r.get("success")]
+        if not ok_results:
+            return "failed", "--", ""
+        if run_sel != "Weighted Average":
+            ok_results = [r for r in ok_results
+                          if str(r.get("run_number", "")) == run_sel]
+
+        # A sample row in GP mode is shown corrected, because that is
+        # the number the shift is taken from. A raw centroid beside a
+        # reference of 0 is how a 150 MHz error stayed invisible.
+        rc = self._gp_corrector() if gp_mode else None
+        if gp_mode and rc is None:
+            return "fit GP", "--", (
+                "The reference is the GP drift model but no GP is "
+                "fitted. Fit it on the Reference Correction tab.")
+
+        vals, errs, n_fly = [], [], 0
+        for r in ok_results:
+            c, s = extract_centroid(r.get("params_df", {}))
+            if c is None:
+                continue
+            if gp_mode:
+                fr = self._frame(project, r, c)
+                if fr["corrected"] is None:
+                    return "no time", "--", (
+                        f"Run {r.get('run_number', '?')} has no "
+                        f"timestamp, so the GP cannot be evaluated "
+                        f"for it.")
+                c = fr["corrected"]
+                n_fly += int(fr["on_the_fly"])
+            vals.append(c)
+            errs.append(s)
+        if not vals:
+            return "N/A", "--", ""
+        if len(vals) == 1:
+            c, s = vals[0], errs[0]
+        else:
+            c, s = weighted_average(vals, errs)
+        tip = ""
+        if gp_mode:
+            tip = ("Drift-corrected: the GP averaged over each run's "
+                   "own acquisition window has been subtracted")
+            tip += (f" ({n_fly} run(s) here, the rest at fit time)."
+                    if n_fly else " (at fit time).")
+        return f"{c:.4f}", f"{s:.4f}", tip
+
+    def _update_centroids(self):
+        """Refresh every row's Centroid / Stat. err cells.
+
+        All rows, every time: moving the reference to or from the GP
+        changes the frame every other row is shown in. Cheap -- a
+        handful of GP interval evaluations.
+        """
+        gp_mode = self._gp_mode()
+        for e in self._entries:
+            c_txt, s_txt, tip = self._row_centroid(e, gp_mode)
+            e.centroid_item.setText(c_txt)
+            e.error_item.setText(s_txt)
+            e.centroid_item.setToolTip(tip)
 
     # ═══════════════════════════════════════════════════════════════
     #  Compute isotope shifts
     # ═══════════════════════════════════════════════════════════════
+
+    def _best_reference_run(self, project, ok_results):
+        """The reference run to draw when the GP is the reference.
+
+        The smallest centroid error: the sharpest picture of the line.
+        Runs excluded from the GP are skipped -- drawing the one run
+        the user threw out would be the worst possible choice.
+        """
+        from gui.analysis.gp_frame import observation_key
+        panel = getattr(self, "_ref_corr_panel", None)
+        excluded = set(getattr(panel, "_excluded_obs", set()) or set())
+        best, best_s = None, float("inf")
+        for r in ok_results:
+            if observation_key(project, r) in excluded:
+                continue
+            c, s = extract_centroid(r.get("params_df", {}))
+            if c is None or s is None or not (s > 0):
+                continue
+            if s < best_s:
+                best, best_s = r, s
+        return best if best is not None else (
+            ok_results[0] if ok_results else None)
+
+    def _gp_correct(self, project, result, c_fit, label, log_lines):
+        """``(corrected_centroid, effective_run_metadata)`` for one
+        result in GP mode, or ``(None, None)`` when the GP cannot be
+        evaluated for it.
+
+        A run corrected at fit time comes back unchanged. One that was
+        not is corrected here and handed back with the run_metadata
+        the fit would have written, so the propagation below counts
+        it -- see gui/analysis/gp_frame.py.
+        """
+        from gui.analysis.gp_frame import effective_run_metadata
+        fr = self._frame(project, result, c_fit)
+        run = result.get("run_number", "?")
+        if fr["corrected"] is None:
+            log_lines.append(
+                f"WARNING: '{label}' run {run} has no timestamp; the "
+                f"GP cannot correct it, so it is left out.")
+            return None, None
+        if fr["on_the_fly"]:
+            kind = "merged, count-weighted" if fr["level"]["merged"] \
+                else "window average"
+            log_lines.append(
+                f"  {label} run {run}: {c_fit:.4f} - G {fr['g']:.4f} "
+                f"= {fr['corrected']:.4f} MHz  (GP applied here, "
+                f"{kind})")
+        return fr["corrected"], effective_run_metadata(result, fr)
+
+    def _runs_of(self, project, result):
+        """``[(run_num, ts_start, ts_stop, n_events)]`` behind one fit
+        result. Lives in gui.analysis.gp_frame so the GP panel reads
+        merged constituents the same way (2026-09-21)."""
+        from gui.analysis.gp_frame import result_runs
+        return result_runs(project, result,
+                           self._get_source_block(project)
+                           if project else None)
+
+    def _applied_correction(self, result, run_num):
+        """What the last fit subtracted for ``run_num``, or None."""
+        rm = result.get("run_metadata") or {}
+        if not rm.get("centroid_correction_applied"):
+            return None
+        for c in (rm.get("correction_constituents") or []):
+            if str(c.get("run_num", "")) == str(run_num):
+                return float(c.get("centroid_correction_mhz", 0.0))
+        if rm.get("centroid_correction_mode") == "merged":
+            return None          # constituent not found in the audit
+        return float(rm.get("centroid_correction_mhz", 0.0))
+
+    def _build_centroid_diagnostic(self, selected, isotope_entries):
+        """Fill the Centroids tab by asking the GP about each run.
+
+        Computed from the corrector, over each run's own acquisition
+        window, rather than read back from the fit -- so it answers
+        "what does the drift model say about this measurement?" even
+        for a project whose fits predate the correction, and for a
+        reference row set to GP_REFERENCE, which has no runs of its
+        own. Where a fit DID apply a correction it is shown in the
+        Applied column, so a stale fit shows up as a mismatch instead
+        of being believed.
+
+        Times are relative to the GP's own t0 -- the first reference
+        measurement -- so every row shares the origin the drift plot
+        uses.
+        """
+        rc = self._ref_corr_panel.corrector
+        rows = []
+        for e in selected:
+            label = e.label_edit.text() or f"A={e.a_spin.value()}"
+            entry = isotope_entries.get(label)
+            if entry is None:
+                continue
+            run_sel = e.run_combo.currentText()
+            if run_sel == GP_REFERENCE:
+                rows.append((label, "GP drift model", "reference",
+                             None, None, None, None, None, None,
+                             entry.get("centroid")))
+                continue
+            if rc is None or not getattr(rc, "is_fit", False):
+                rows.append((label, "(no GP fitted)", "", None, None,
+                             None, None, None, None,
+                             entry.get("centroid")))
+                continue
+
+            project = self._find_project(e.project_combo.currentText())
+            results = [r for r in (getattr(project, "_last_results", None)
+                                   or []) if r.get("success")] \
+                if project is not None else []
+            if run_sel != "Weighted Average":
+                results = [r for r in results
+                           if str(r.get("run_number", "")) == run_sel]
+
+            parts = []   # (run, kind, ts0, ts1, weight, mu, sd, applied)
+            for r in results:
+                runs = self._runs_of(project, r)
+                kind = "merged" if len(runs) > 1 else "single"
+                n_tot = sum(n for _, _, _, n in runs)
+                for run_num, ts0, ts1, n_ev in runs:
+                    if ts0 <= 0:
+                        continue
+                    mu, sd = rc.predict_interval(
+                        ts0 / 3600.0,
+                        ts1 / 3600.0 if ts1 > ts0 else ts0 / 3600.0)
+                    # Within a merge: share of the counts, because
+                    # the merged peak is a count-weighted blend.
+                    # Across separate runs of one isotope: equal, the
+                    # inverse-variance weighting happens on the
+                    # CENTROIDS, not on the reference estimates.
+                    w = (n_ev / n_tot) if (n_tot > 0 and len(runs) > 1) \
+                        else 1.0 / max(len(runs), 1)
+                    parts.append((run_num, kind, ts0, ts1, w, mu, sd,
+                                  self._applied_correction(r, run_num)))
+
+            if not parts:
+                rows.append((label, "(no dated runs)", "", None, None,
+                             None, None, None, None,
+                             entry.get("centroid")))
+                continue
+
+            t0_h = float(getattr(rc, "_t0", 0.0))
+            wsum = sum(p[4] for p in parts) or 1.0
+            for run_num, kind, ts0, ts1, w, mu, sd, applied in parts:
+                rows.append((
+                    label, run_num, kind,
+                    ts0 / 3600.0 - t0_h,
+                    (ts1 - ts0) if ts1 > ts0 else None,
+                    w / wsum, mu, sd, applied, None))
+            mu_c = sum(p[5] * p[4] for p in parts) / wsum
+            sd_c = (sum((p[6] * p[4] / wsum) ** 2 for p in parts)) ** 0.5
+            rows.append((label, "combined", "weighted", None, None,
+                         1.0, mu_c, sd_c, None, entry.get("centroid")))
+        self._centroid_rows = rows
+        self._populate_centroid_table()
+
+    def _populate_centroid_table(self):
+        """Render ``_centroid_rows``; combined lines are set bold."""
+        from PySide6.QtGui import QFont
+        rows = getattr(self, "_centroid_rows", []) or []
+        t = self._centroid_table
+        if not rows:
+            # An empty grid looks like a broken tab; say what it is
+            # waiting for.
+            t.setRowCount(1)
+            msg = QTableWidgetItem(
+                "Press Compute Shifts to see how each shift was "
+                "assembled: per-run acquisition windows, the "
+                "reference centroid the GP predicts for each, and "
+                "the weighted combination actually subtracted.")
+            msg.setTextAlignment(Qt.AlignmentFlag.AlignLeft
+                                 | Qt.AlignmentFlag.AlignVCenter)
+            t.setItem(0, 0, msg)
+            t.setSpan(0, 0, 1, t.columnCount())
+            return
+        t.clearSpans()
+        t.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            (label, run, kind, t0, dur, w, mu, sd, applied,
+             corrected) = row
+            cells = [
+                label, run, kind,
+                "" if t0 is None else f"{t0:.3f}",
+                "" if dur is None else f"{dur:.0f}",
+                "" if w is None else f"{w:.3f}",
+                "" if mu is None else f"{mu:.3f}",
+                "" if sd is None else f"{sd:.3f}",
+                "" if applied is None else f"{applied:.3f}",
+                "" if corrected is None else f"{corrected:.4f}",
+            ]
+            bold = (run in ("combined", "GP drift model")
+                    or run.startswith("("))
+            for c, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if bold:
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+                if c >= 3:
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight
+                        | Qt.AlignmentFlag.AlignVCenter)
+                # A fit that subtracted something other than what the
+                # GP now says is stale -- flag it rather than let the
+                # two numbers sit side by side unremarked.
+                if (c == 8 and text and mu is not None
+                        and abs(applied - mu) > 0.05):
+                    item.setForeground(QColor("#e08a3c"))
+                    item.setToolTip(
+                        f"The fit subtracted {applied:.3f} MHz but "
+                        f"the GP now predicts {mu:.3f} MHz for this "
+                        f"window. Re-run the fit to bring them into "
+                        f"line.")
+                t.setItem(i, c, item)
+
+    def _is_warn(self, text):
+        """Report a misconfiguration to the user.
+
+        Silent while the systematic scan is driving this tab: a modal
+        box in the middle of a 250-fit scan stops it dead, waiting for
+        a click nobody is there to give. The scan reads the messages
+        out of `_quiet_messages` instead.
+        """
+        if getattr(self, "_quiet", False):
+            self._quiet_messages.append(str(text))
+            return
+        QMessageBox.warning(self, "Isotope Shifts", str(text))
+
+    def shifts_for_scan(self):
+        """Recompute the shifts and hand the rows back.
+
+        Used by the systematic scan once per assumed cooler offset,
+        after the reference has been refitted, the GP retrained and
+        the corrections recomputed -- so these are the shifts as that
+        offset would have them.
+
+        Returns [] rather than stale rows when the tab is not
+        configured to compute anything: the previous offset's answer
+        silently attributed to this one would be worse than a gap.
+        """
+        self._quiet = True
+        self._quiet_messages = []
+        self._last_shift_data = []
+        try:
+            self._compute_shifts()
+        finally:
+            self._quiet = False
+        return list(self._last_shift_data or [])
 
     def _compute_shifts(self):
         """Main computation: centroids -> systematics -> shifts -> plot + table."""
@@ -1156,8 +1520,7 @@ class IsotopeShiftTab(QWidget):
         # Collect selected entries
         selected = [e for e in self._entries if e.select_cb.isChecked()]
         if len(selected) < 2:
-            QMessageBox.warning(self, "Isotope Shifts",
-                                "Select at least 2 isotopes.")
+            self._is_warn("Select at least 2 isotopes.")
             return
 
         # Find reference
@@ -1167,11 +1530,26 @@ class IsotopeShiftTab(QWidget):
                 ref_entry = e
                 break
         if ref_entry is None:
-            QMessageBox.warning(self, "Isotope Shifts",
-                                "Select a reference isotope.")
+            self._is_warn("Select a reference isotope.")
+            return
+
+        gp_mode = ref_entry.run_combo.currentText() == GP_REFERENCE
+        gp_rc = self._gp_corrector()
+        if gp_mode and gp_rc is None:
+            self._is_warn(
+                "The reference is the GP drift model, but no GP is "
+                "fitted. Fit it on the Reference Correction tab "
+                "first.")
             return
 
         log_lines = []
+        if gp_mode:
+            log_lines.append(
+                "GP mode: every sample centroid is put in the "
+                "drift-free frame. Runs corrected at fit time are used "
+                "as they are; the rest have the GP, averaged over "
+                "their own acquisition window, subtracted here.")
+            log_lines.append("")
 
         # Build isotope_entries dict
         isotope_entries = {}
@@ -1221,6 +1599,39 @@ class IsotopeShiftTab(QWidget):
             # so σ_correction reflects the per-file structure
             # (rather than a mean(μ) + RMS(σ) approximation).
             iso_merged_constituents: list[dict] = []
+            if run_sel == GP_REFERENCE:
+                # The reference IS the drift curve. Every sample has
+                # already had it subtracted over its own window, so
+                # this row is the origin of the corrected frame: 0,
+                # with no measurement error of its own. The GP's
+                # uncertainty is not lost -- it is already inside
+                # each sample's sigma_correction.
+                centroid, sigma_fit, sigma_scatter = 0.0, 0.0, 0.0
+                iso_total_weight = 0.0
+                log_lines.append(
+                    f"{label}: reference taken from the GP drift "
+                    f"model -> 0.0000 MHz by construction (the "
+                    f"samples are already in the drift-free frame).")
+                isotope_entries[label] = {
+                    "centroid": centroid,
+                    "sigma_fit": sigma_fit,
+                    "sigma_scatter": sigma_scatter,
+                    "sigma_correction": 0.0,
+                    "sigma_voltage": 0.0,
+                    "A": e.a_spin.value(),
+                }
+                isotope_runs[label] = {
+                    "auto_t": np.asarray([], dtype=float),
+                    "auto_w": np.asarray([], dtype=float),
+                    "manual_sigmas": np.asarray([], dtype=float),
+                    "manual_w": np.asarray([], dtype=float),
+                    "total_weight": 0.0,
+                }
+                pname = e.project_combo.currentText()
+                run_metadata_by_project.setdefault(pname, [])
+                if e is ref_entry:
+                    ref_key = label
+                continue
             if run_sel == "Weighted Average":
                 vals, errs = [], []
                 run_metas: list[dict] = []
@@ -1228,9 +1639,15 @@ class IsotopeShiftTab(QWidget):
                     c, s = extract_centroid(r.get("params_df", {}))
                     if c is None:
                         continue
+                    rm_r = r.get("run_metadata") or {}
+                    if gp_mode:
+                        c, rm_r = self._gp_correct(
+                            project, r, c, label, log_lines)
+                        if c is None:
+                            continue
                     vals.append(c)
                     errs.append(s if (s and s > 0) else 1.0)
-                    run_metas.append(r.get("run_metadata") or {})
+                    run_metas.append(rm_r)
                 if not vals:
                     log_lines.append(
                         f"WARNING: '{label}' no centroids found, skipping.")
@@ -1305,6 +1722,10 @@ class IsotopeShiftTab(QWidget):
                         centroid, sigma = extract_centroid(
                             r.get("params_df", {}))
                         run_meta = r.get("run_metadata") or {}
+                        if gp_mode and centroid is not None:
+                            centroid, run_meta = self._gp_correct(
+                                project, r, centroid, label, log_lines)
+                            run_meta = run_meta or {}
                         break
                 if centroid is None:
                     log_lines.append(
@@ -1421,8 +1842,7 @@ class IsotopeShiftTab(QWidget):
                 ref_key = label
 
         if ref_key is None or ref_key not in isotope_entries:
-            QMessageBox.warning(self, "Isotope Shifts",
-                                "Reference isotope has no valid centroid.")
+            self._is_warn("Reference isotope has no valid centroid.")
             return
 
         # Systematic errors
@@ -1480,6 +1900,11 @@ class IsotopeShiftTab(QWidget):
         gp_cross_cov: dict[tuple[str, str], float] = {}
         corrector = (self._ref_corr_panel.corrector
                      if self._ref_corr_panel.apply_globally else None)
+        # GP mode always has a GP to propagate through: it just
+        # applied it. "Apply correction at fit time" is about the fit,
+        # not about whether the shift should carry the GP's error.
+        if gp_mode:
+            corrector = gp_rc
         any_corrected = any(
             (len(runs["auto_t"]) + len(runs["manual_sigmas"])) > 0
             for runs in isotope_runs.values())
@@ -1543,6 +1968,8 @@ class IsotopeShiftTab(QWidget):
                     gp_cross_cov[(label, ref_key)] = cov
                     log_lines.append(
                         f"  Cov({label}, {ref_key}) = {cov:.4f} MHz²")
+
+        self._build_centroid_diagnostic(selected, isotope_entries)
 
         # Compute shifts
         log_lines.append("")
@@ -1656,6 +2083,8 @@ class IsotopeShiftTab(QWidget):
         if n == 0:
             return
 
+        gp_mode = self._gp_mode() and self._gp_corrector() is not None
+
         # Determine reference centroid for relative x-axis
         ref_centroid = 0.0
         for sd, _, _ in items:
@@ -1686,34 +2115,51 @@ class IsotopeShiftTab(QWidget):
             # Get run data for plotting
             x_data, y_data, yerr_data = None, None, None
             x_smooth, y_smooth = None, None
+            shown_run = None          # the result whose spectrum is drawn
+            panel_note = ""
 
             if project and project._last_results:
                 run_sel = entry.run_combo.currentText()
+                ok = [r for r in project._last_results if r.get("success")]
                 if run_sel == "Weighted Average":
-                    for r in project._last_results:
-                        if r.get("success"):
-                            x_data = np.array(r.get("x", []))
-                            y_data = np.array(r.get("y", []))
-                            yerr_data = np.array(r.get("yerr", []))
-                            x_smooth = np.array(r.get("x_smooth", []))
-                            y_smooth = np.array(r.get("y_fit_smooth", []))
-                            break
+                    shown_run = ok[0] if ok else None
+                elif run_sel == GP_REFERENCE:
+                    # No single measurement IS the reference here -- the
+                    # curve is. Show the reference project's most
+                    # precise run, put in the same frame as everything
+                    # else, and say which one it is.
+                    shown_run = self._best_reference_run(project, ok)
+                    if shown_run is not None:
+                        panel_note = (f"run {shown_run.get('run_number', '?')}"
+                                      f", drift-corrected")
                 else:
-                    for r in project._last_results:
-                        if (r.get("success") and
-                                str(r.get("run_number", "")) == run_sel):
-                            x_data = np.array(r.get("x", []))
-                            y_data = np.array(r.get("y", []))
-                            yerr_data = np.array(r.get("yerr", []))
-                            x_smooth = np.array(r.get("x_smooth", []))
-                            y_smooth = np.array(r.get("y_fit_smooth", []))
-                            break
+                    shown_run = next(
+                        (r for r in ok
+                         if str(r.get("run_number", "")) == run_sel), None)
+            if shown_run is not None:
+                r = shown_run
+                x_data = np.array(r.get("x", []))
+                y_data = np.array(r.get("y", []))
+                yerr_data = np.array(r.get("yerr", []))
+                x_smooth = np.array(r.get("x_smooth", []))
+                y_smooth = np.array(r.get("y_fit_smooth", []))
 
             if x_data is None or len(x_data) == 0:
                 continue
 
-            x_plot = x_data - x_offset
-            x_sm_plot = (x_smooth - x_offset
+            # GP mode: shift the spectrum by what this result still
+            # needs -- G-bar if it was not corrected at fit time, 0 if
+            # it was -- so the points, the fit curve and the dashed
+            # centroid line all sit in the drift-free frame.
+            gp_shift = 0.0
+            if gp_mode and shown_run is not None:
+                c_fit, _s = extract_centroid(
+                    shown_run.get("params_df", {}))
+                if c_fit is not None:
+                    fr = self._frame(project, shown_run, c_fit)
+                    gp_shift = float(fr["shift"] or 0.0)
+            x_plot = x_data - gp_shift - x_offset
+            x_sm_plot = (x_smooth - gp_shift - x_offset
                          if x_smooth is not None else None)
             centroid_plot = sd["centroid"] - x_offset
 
@@ -1805,6 +2251,11 @@ class IsotopeShiftTab(QWidget):
                         boxstyle="square,pad=0.3", fc="white",
                         ec="black", lw=1.0, alpha=0.9)
                 ax.text(0.02, 0.85, label, **_label_kwargs)
+                if panel_note:
+                    ax.text(0.02, 0.62, panel_note,
+                            transform=ax.transAxes, fontsize=max(
+                                7, int(s.get("label_size", 12)) - 3),
+                            color="#555555", va="top", zorder=10)
                 if idx < n - 1:
                     ax.tick_params(labelbottom=False)
             else:
@@ -1990,6 +2441,129 @@ class IsotopeShiftTab(QWidget):
             ])
         return header, rows
 
+    def _measure_entry_columns(self):
+        """Size the setup table's columns at the font in use now.
+
+        Each column is the wider of its header text and the widest
+        value it can hold -- hardcoded widths were either too wide
+        (pinning half the window to a form) or too narrow (eliding
+        the headers to ":el" and "entroid (MHz"). Re-run on every
+        font change: measured once at construction, the widths were
+        taken before zoom was applied and in whatever font the
+        widget had then, which on the Win98 theme at zoom 1 left the
+        table too narrow for its own contents.
+        """
+        from PySide6.QtGui import QFontMetrics
+        h = self._iso_table.horizontalHeader()
+        _fm = QFontMetrics(self._iso_table.font())
+
+        def _col_w(header, sample, *, pad=22, floor=34):
+            widest = max((_fm.horizontalAdvance(line)
+                          for line in str(header).split("\n")),
+                         default=0)
+            return max(floor, widest + pad,
+                       _fm.horizontalAdvance(sample) + pad)
+
+        from PySide6.QtWidgets import QComboBox, QSpinBox
+
+        def _widget_w(widget, header):
+            """A combo / spin box column is as wide as a real one of
+            its kind needs, in this font and this stylesheet -- the
+            drop-down arrow and frame differ per theme, and a fixed
+            pad under-sized them in the Win98 theme ('74Ge_T0')."""
+            widget.setFont(self._iso_table.font())
+            w = widget.sizeHint().width() + 6
+            widget.deleteLater()
+            return max(w, _col_w(header, ""))
+
+        def _combo(texts):
+            cb = QComboBox()
+            cb.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToContents)
+            for t in texts:
+                cb.addItem(t)
+            return cb
+
+        at = getattr(self, "_analysis_tab", None)
+        names = [p.project_name for p in
+                 (getattr(at, "_projects", []) or [])] or ["76Ge_T02"]
+        spin = QSpinBox()
+        spin.setRange(1, 300)
+        spin.setValue(299)
+
+        _widths = [
+            _col_w("Use", "", pad=14),
+            _widget_w(_combo(names), "Project"),
+            _col_w("Isotope", max(names + ["76Ge"], key=len)),
+            _widget_w(spin, "A"),
+            # Wide enough to READ the selection: a combo showing
+            # "Weighte" is its own kind of confusing, and this is the
+            # column that says where the number came from.
+            _widget_w(_combo(["Weighted Average", GP_REFERENCE,
+                              "99999"]), "Centroid\nfrom"),
+            _col_w("Centroid\n(MHz)", "-1234.5678"),
+            _col_w("Stat. err\n(MHz)", "1234.5678"),
+            _col_w("Ref.", "", pad=14),
+        ]
+        # Room for the second header line.
+        h.setMinimumHeight(int(_fm.height() * 2.4))
+        for _c, _w in enumerate(_widths):
+            h.resizeSection(_c, _w)
+        # The Project column takes any width the pane has beyond what
+        # the columns need, so the table always reaches the plot and
+        # a split wider than the columns leaves no dead gap. Its
+        # measured width is the floor.
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h.setMinimumSectionSize(min(_widths))
+        # The pane only has to be wide enough for the columns it
+        # actually holds, plus the scrollbar and the two frames.
+        self._entries_min_width = sum(_widths) + 62
+        left = getattr(self, "_left_tabs", None)
+        if left is not None:
+            left.setMinimumWidth(self._entries_min_width)
+
+    def changeEvent(self, ev):
+        from PySide6.QtCore import QEvent, QTimer
+        super().changeEvent(ev)
+        if ev.type() == QEvent.Type.FontChange and hasattr(
+                self, "_iso_table"):
+            # Deferred a tick: zoom sets fonts widget by widget in no
+            # particular order, so this tab can hear about the change
+            # before its table has the new font. Measuring then would
+            # measure the old one.
+            QTimer.singleShot(0, self._measure_entry_columns)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if not getattr(self, "_split_initialised", True):
+            self._split_initialised = True
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._apply_default_split)
+
+    def _apply_default_split(self):
+        """The plot starts at the setup table's right edge.
+
+        Skipped when a saved layout is in charge -- ui_layout marks
+        the splitter when it restores (or schedules) one.
+        """
+        sp = self._main_splitter
+        if sp.property("ui_layout_restored"):
+            return
+        self._measure_entry_columns()
+        total = sp.width()
+        left = int(self._entries_min_width)
+        if total > left + 360:
+            sp.setSizes([left, total - left])
+
+    def ui_layout(self):
+        """Adjustable geometry of this tab (see gui.ui_layout)."""
+        from gui.ui_layout import collect
+        return collect(main=getattr(self, "_main_splitter", None))
+
+    def apply_ui_layout(self, d):
+        from gui.ui_layout import restore
+        restore(d, main=getattr(self, "_main_splitter", None))
+
     def _push_to_results(self):
         """Save IS data and emit results_ready for the Results tab."""
         if not self._last_shift_data:
@@ -2087,7 +2661,7 @@ class IsotopeShiftTab(QWidget):
         output_config = {
             "report": True, "params_csv": True,
             "metadata_csv": False, "fit_plots": True,
-            "iter_label": iter_name,
+            "iter_label": iter_name, "iter_name": iter_name,
         }
         self.results_ready.emit(project_name, results, output_config)
         QMessageBox.information(
@@ -2375,3 +2949,9 @@ class IsotopeShiftTab(QWidget):
         # + per-file corrections + checked-project state). Done last so
         # the panel sees the final project list.
         self._ref_corr_panel.from_dict(d.get("reference_correction") or {})
+
+        # The cells used to stay blank until Refresh or Compute. After
+        # the event loop turns, so the GP restored just above is the
+        # one GP-mode rows are corrected with.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._update_centroids)

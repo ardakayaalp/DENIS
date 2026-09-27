@@ -1104,6 +1104,15 @@ class WheelFocusGuard(QObject):
         return False
 
 
+def _emit_close_for(bar, wrap) -> None:
+    """Emit ``tabCloseRequested`` for the tab whose close button sits
+    in *wrap* -- see style_project_tab_bar."""
+    for j in range(bar.count()):
+        if bar.tabButton(j, QTabBar.ButtonPosition.RightSide) is wrap:
+            bar.tabCloseRequested.emit(j)
+            return
+
+
 def style_project_tab_bar(tabs) -> None:
     """Project tab bars (PA / Analysis): subtle per-name color dot +
     visually centered labels.
@@ -1163,6 +1172,17 @@ def style_project_tab_bar(tabs) -> None:
             # or every project tab shows an empty container instead of
             # its ✕.
             btn.show()
+            # ...and re-wire it. QTabBar decides WHICH tab a close
+            # click belongs to by comparing the clicked button with
+            # the button registered for each tab. After wrapping, the
+            # registered one is `wrap`, so the native button matched
+            # no tab and every ✕ click was silently swallowed -- no
+            # project tab could be closed from its button from
+            # 2026-07-25 to 2026-09-22. The index is looked up at
+            # click time because tabs move and close.
+            btn.clicked.connect(
+                lambda _checked=False, b=bar, w=wrap:
+                _emit_close_for(b, w))
 
 
 def install_wheel_guard(app) -> WheelFocusGuard:

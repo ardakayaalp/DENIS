@@ -527,6 +527,31 @@ def focus_and_highlight(widget):
 _TIP_STRUCT_RE = None
 
 
+#: Long tooltips are boxed to a width that grows with the square root of
+#: their length -- about twice as wide as tall -- so they sit as a compact
+#: block by the pointer instead of a strip across the screen (Arda,
+#: 2026-09-27: "make it square ... confine them in rectangular or square
+#: boxes around the mouse pointer").
+TIP_MIN_CHARS = 28
+TIP_MAX_CHARS = 60
+
+
+def tooltip_width_chars(text_len):
+    """Box width in characters for a tooltip of ``text_len`` characters."""
+    import math
+    return int(max(TIP_MIN_CHARS,
+                   min(TIP_MAX_CHARS, 2 * math.sqrt(max(int(text_len), 1)))))
+
+
+def _tooltip_width_px(text_len):
+    try:
+        from PySide6.QtGui import QFontMetrics
+        char_w = QFontMetrics(QToolTip.font()).averageCharWidth()
+    except Exception:                                     # noqa: BLE001
+        char_w = 0
+    return tooltip_width_chars(text_len) * max(int(char_w), 6)
+
+
 def reflow_tooltip(tip):
     """Reflow a hand-wrapped PLAIN-text tooltip into rich text, or None.
 
@@ -568,7 +593,12 @@ def reflow_tooltip(tip):
         blocks.append("<br>".join(_html.escape(r) for r in rows))
     if not blocks:
         return None
-    return "<qt>" + "<br><br>".join(blocks) + "</qt>"
+    # A fixed-width table is what Qt's rich-text tooltip honours as a
+    # wrap width; without it a long paragraph runs as wide as it likes.
+    width = _tooltip_width_px(len(tip))
+    return ("<qt><table width=\"%d\" cellspacing=\"0\" cellpadding=\"0\">"
+            "<tr><td>" % width + "<br><br>".join(blocks)
+            + "</td></tr></table></qt>")
 
 
 class _TooltipWrapFilter(QObject):
@@ -586,6 +616,25 @@ class _TooltipWrapFilter(QObject):
     def eventFilter(self, obj, event):
         if event.type() != QEvent.Type.ToolTip:
             return False
+        # Header path: a QHeaderView has no cells, so the item lookup
+        # below finds nothing and Qt used to show the section's tooltip
+        # raw -- one line across the screen. Ask the model for it.
+        try:
+            from PySide6.QtWidgets import QHeaderView
+            hview = obj.parent() if isinstance(obj, QWidget) else None
+            if isinstance(hview, QHeaderView) and obj is hview.viewport():
+                section = hview.logicalIndexAt(event.pos())
+                model = hview.model()
+                tip = (model.headerData(section, hview.orientation(),
+                                        Qt.ItemDataRole.ToolTipRole)
+                       if (model is not None and section >= 0) else None)
+                if isinstance(tip, str) and tip:
+                    QToolTip.showText(event.globalPos(),
+                                      reflow_tooltip(tip) or tip, obj)
+                    return True
+                return False
+        except Exception:
+            pass
         # Item-view path: obj is the viewport of a QAbstractItemView.
         try:
             from PySide6.QtWidgets import QAbstractItemView
@@ -4391,6 +4440,9 @@ _DEFAULT_PLOT_TYPE_SETTINGS = {
         "title_size": 12,
         "figsize_w": 9.0,
         "panel_h": 2.2,
+        "show_burn_line": True,
+        "burn_line_color": "#000000",
+        "burn_line_width": 1.5,
     },
     "correlation_plot": {
         "hist_bins": 40,
@@ -4399,10 +4451,20 @@ _DEFAULT_PLOT_TYPE_SETTINGS = {
         "scatter_s": 0.5,
         "scatter_alpha": 0.25,
         "scatter_color": "black",
-        "label_size": 9,
-        "tick_size": 8,
+        "label_size": 11,
+        "tick_size": 9,
         "title_size": 12,
         "cell_size": 2.8,
+        "style": "Credible regions",
+        "contour_cmap": "Blues",
+        "font_family": "serif",
+        "contour_bins": 30,
+        "smooth": 1.2,
+        "hist_lw": 1.5,
+        "quantile_lw": 1.0,
+        "contour_lw": 1.0,
+        "frame_lw": 2.0,
+        "max_ticks": 3,
     },
     "chisq_map": {
         "line_fmt": "b.-",
@@ -4560,6 +4622,34 @@ def fit_plot_settings_for_counts(max_count):
 # Per-key tooltips for the Plot Defaults UI. Keyed by plot type, then by
 # settings key. Missing keys fall back to a generic label-style tooltip.
 _PLOT_TYPE_TOOLTIPS = {
+    "walk_plot": {
+        "show_burn_line": (
+            "Draw a dashed vertical line at the burn-in step (Fitter "
+            "block > MCMC Settings > Burn-in). Steps left of it were "
+            "discarded; the reported values and errors use only the "
+            "steps to its right."),
+        "burn_line_color": "Any matplotlib colour: a name or #rrggbb.",
+    },
+    "correlation_plot": {
+        "style": (
+            "Credible regions: filled 2-D regions at 0.5, 1, 1.5 and 2 "
+            "sigma, step histograms with the 16/50/84 % lines and the "
+            "value in each title.\nScatter: every sample as a point, as "
+            "before."),
+        "contour_cmap": (
+            "Colour scale of the filled 2-D regions. The innermost (most "
+            "probable) region takes the darkest colour; histograms and "
+            "contour lines take the darkest end of the same scale."),
+        "font_family": "Serif matches most journals; sans-serif matches "
+                       "the rest of DENIS.",
+        "contour_bins": "Bins per axis of the 2-D histogram the regions "
+                        "are traced from.",
+        "smooth": (
+            "Gaussian smoothing of the 2-D histogram, in bins. 0 = none "
+            "(jagged regions); 1-1.5 is usual."),
+        "max_ticks": "Major ticks per axis. Three keeps crowded panels "
+                     "readable.",
+    },
     "fit_plot": {
         "auto_size_by_counts": (
             "Pick marker size, alpha and error-bar style automatically "
@@ -4631,6 +4721,32 @@ def get_plot_type_tooltip(plot_type, key):
 # layout. The `note` field, if present, becomes a small info label at
 # the top of the section. `keys` controls both inclusion and order.
 _PLOT_TYPE_SECTIONS = {
+    "walk_plot": [
+        {"title": "Burn-in",
+         "note": "The dashed line marks the first step the reported "
+                 "values use (Fitter block > MCMC Settings > Burn-in).",
+         "keys": ["show_burn_line", "burn_line_color", "burn_line_width"]},
+        {"title": "Traces",
+         "keys": ["trace_alpha", "trace_lw"]},
+        {"title": "Sizes",
+         "keys": ["label_size", "tick_size", "title_size", "figsize_w",
+                  "panel_h"]},
+    ],
+    "correlation_plot": [
+        {"title": "Style",
+         "keys": ["style", "contour_cmap", "font_family"]},
+        {"title": "Credible regions",
+         "note": "Filled 2-D regions at 0.5, 1, 1.5 and 2 sigma (11.8, "
+                 "39.3, 67.5 and 86.5 % of the samples).",
+         "keys": ["contour_bins", "smooth", "contour_lw", "hist_bins",
+                  "hist_lw", "quantile_lw", "frame_lw", "max_ticks"]},
+        {"title": "Sizes",
+         "keys": ["label_size", "tick_size", "title_size", "cell_size"]},
+        {"title": "Scatter style",
+         "note": "Used only when Style is Scatter.",
+         "keys": ["hist_color", "hist_alpha", "scatter_s",
+                  "scatter_alpha", "scatter_color"]},
+    ],
     "fit_plot": [
         {
             "title": "Auto-sizing thresholds",
@@ -4685,6 +4801,30 @@ _PLOT_TYPE_SECTIONS = {
 # auto-prettified "Snake_case → Title Case" rendering on the form rows
 # so renamed thresholds and per-region marker sizes read naturally.
 _PLOT_TYPE_LABELS = {
+    "walk_plot": {
+        "show_burn_line":  "Mark the burn-in cut",
+        "burn_line_color": "Burn-in line colour",
+        "burn_line_width": "Burn-in line width",
+    },
+    "correlation_plot": {
+        "style":        "Style",
+        "contour_cmap": "2-D colour scale",
+        "font_family":  "Font",
+        "contour_bins": "2-D bins",
+        "smooth":       "2-D smoothing (bins)",
+        "hist_lw":      "Histogram line width",
+        "quantile_lw":  "16/50/84 % line width",
+        "contour_lw":   "Contour line width",
+        "frame_lw":     "Frame line width",
+        "max_ticks":    "Max ticks per axis",
+        "hist_bins":    "Histogram bins",
+        "hist_color":   "Histogram colour (Scatter)",
+        "hist_alpha":   "Histogram alpha (Scatter)",
+        "scatter_s":    "Point size (Scatter)",
+        "scatter_alpha": "Point alpha (Scatter)",
+        "scatter_color": "Point colour (Scatter)",
+        "cell_size":    "Panel size (in)",
+    },
     "fit_plot": {
         "auto_size_by_counts":   "Auto-size by counts",
         "low_count_max":         "Low → Medium threshold",
@@ -4731,6 +4871,20 @@ _PLOT_TYPE_LABELS = {
 
 def get_plot_type_sections(plot_type):
     return _PLOT_TYPE_SECTIONS.get(plot_type)
+
+
+def get_plot_type_choices(plot_type, key):
+    """The allowed values of a setting shown as a drop-down, or None.
+
+    Resolved lazily: the lists belong to the renderer that uses them
+    (gui.analysis.mcmc_plots), which is imported after this module.
+    """
+    if plot_type != "correlation_plot":
+        return None
+    from gui.analysis import mcmc_plots as _mp
+    return {"style": _mp.CORNER_STYLES,
+            "contour_cmap": _mp.CONTOUR_CMAPS,
+            "font_family": _mp.FONT_FAMILIES}.get(key)
 
 
 def get_plot_type_label(plot_type, key, fallback=None):
@@ -4850,10 +5004,19 @@ def format_fit_value_lines(params_records, selected_keys):
 _PLOT_COUNT_THRESHOLD_KEYS = {"low_count_max", "med_count_max"}
 
 
-def _make_plot_setting_widget(default_v, val, tip, key=None):
+def _make_plot_setting_widget(default_v, val, tip, key=None, choices=None):
     """Widget for one plot-settings entry (bool checked BEFORE int —
-    bool subclasses int and would otherwise render as a spinbox)."""
-    if isinstance(default_v, bool):
+    bool subclasses int and would otherwise render as a spinbox).
+    ``choices`` makes it a drop-down; an unknown saved value falls back
+    to the default rather than being offered."""
+    if choices:
+        w = QComboBox()
+        w.addItems([str(c) for c in choices])
+        idx = w.findText(str(val))
+        if idx < 0:
+            idx = max(0, w.findText(str(default_v)))
+        w.setCurrentIndex(idx)
+    elif isinstance(default_v, bool):
         w = QCheckBox()
         w.setChecked(bool(val))
     elif isinstance(default_v, float):
@@ -4948,8 +5111,9 @@ class PlotTypeOptionsDialog(QDialog):
                     default_v = defaults[k]
                     val = user_vals.get(k, default_v)
                     tip = get_plot_type_tooltip(pt_key, k)
-                    w = _make_plot_setting_widget(default_v, val, tip,
-                                                  key=k)
+                    w = _make_plot_setting_widget(
+                        default_v, val, tip, key=k,
+                        choices=get_plot_type_choices(pt_key, k))
                     if w is None:
                         continue
                     label_w = QLabel(f"{get_plot_type_label(pt_key, k)}:")
@@ -5018,6 +5182,8 @@ class PlotTypeOptionsDialog(QDialog):
         outer.addWidget(btns)
 
     def _widget_value(self, w):
+        if isinstance(w, QComboBox):
+            return w.currentText()
         if isinstance(w, QCheckBox):
             return w.isChecked()
         if isinstance(w, (QSpinBox, QDoubleSpinBox)):
@@ -5027,7 +5193,11 @@ class PlotTypeOptionsDialog(QDialog):
         return None
 
     def _set_widget_value(self, w, val):
-        if isinstance(w, QCheckBox):
+        if isinstance(w, QComboBox):
+            idx = w.findText(str(val))
+            if idx >= 0:
+                w.setCurrentIndex(idx)
+        elif isinstance(w, QCheckBox):
             w.setChecked(bool(val))
         elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
             w.setValue(val)

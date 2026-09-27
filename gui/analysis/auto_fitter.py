@@ -86,13 +86,8 @@ def _build_models_on_source(source, model_configs, satlas2):
 
             source.addModel(hfs)
             model_map[safe] = hfs
-
-            bkg_val = params.get("Bkg_p0", {}).get("value", 0)
-            bkg = satlas2.Polynomial([bkg_val], name=f"{safe}_bkg")
-            bkg.params["p0"].vary = params.get(
-                "Bkg_p0", {}).get("vary", True)
-            source.addModel(bkg)
-            model_map[f"{safe}_bkg"] = bkg
+            model_map[f"{safe}_bkg"] = _add_background(
+                satlas2, source, params, f"{safe}_bkg")
 
         elif mt == "Voigt":
             voigt = satlas2.Voigt(
@@ -105,23 +100,49 @@ def _build_models_on_source(source, model_configs, satlas2):
                         "vary", True)
             source.addModel(voigt)
             model_map[safe] = voigt
-            bkg_val = params.get("Bkg_p0", {}).get("value", 0)
-            bkg = satlas2.Polynomial([bkg_val], name=f"{safe}_bkg")
-            bkg.params["p0"].vary = params.get(
-                "Bkg_p0", {}).get("vary", True)
-            source.addModel(bkg)
-            model_map[f"{safe}_bkg"] = bkg
+            model_map[f"{safe}_bkg"] = _add_background(
+                satlas2, source, params, f"{safe}_bkg")
 
     return model_map
+
+
+def _add_background(satlas2, source, params, bkg_name):
+    """The auto-fitter's copy of fitting.py's background builder.
+
+    Kept here rather than imported because this module is the one
+    that runs inside the multiprocessing workers; see
+    ``fitting._add_background_model`` for why the coefficient list is
+    reversed.
+    """
+    from gui.analysis.naming import (
+        background_coefficients, bkg_param_key)
+    names = background_coefficients(params) or ["Bkg_p0"]
+    coeffs = [float(params.get(n, {}).get("value", 0) or 0)
+              for n in names]
+    bkg = satlas2.Polynomial(list(reversed(coeffs)), name=bkg_name)
+    for n in names:
+        key = bkg_param_key(n)
+        if key in bkg.params:
+            bkg.params[key].vary = params.get(n, {}).get("vary", True)
+    source.addModel(bkg)
+    return bkg
+
+
+def _bkg_key(pname):
+    """``"Bkg_p1"`` -> ``"p1"``; None when *pname* is not one."""
+    from gui.analysis.naming import BKG_PREFIX, bkg_param_key
+    return (bkg_param_key(pname) if pname.startswith(BKG_PREFIX)
+            else None)
 
 
 def _set_param(model_map, mc_name, pname, val):
     """Set a parameter value on the correct model in model_map."""
     safe = re.sub(r'[^A-Za-z0-9_]', '_', mc_name)
-    if pname == "Bkg_p0":
+    key = _bkg_key(pname)
+    if key is not None:
         m = model_map.get(f"{safe}_bkg")
-        if m:
-            m.params["p0"].value = val
+        if m and key in m.params:
+            m.params[key].value = val
     else:
         m = model_map.get(safe)
         if m and pname in m.params:
@@ -131,9 +152,12 @@ def _set_param(model_map, mc_name, pname, val):
 def _get_param(model_map, mc_name, pname):
     """Read a fitted parameter value from model_map."""
     safe = re.sub(r'[^A-Za-z0-9_]', '_', mc_name)
-    if pname == "Bkg_p0":
+    key = _bkg_key(pname)
+    if key is not None:
         m = model_map.get(f"{safe}_bkg")
-        return float(m.params["p0"].value) if m else 0.0
+        if m and key in m.params:
+            return float(m.params[key].value)
+        return 0.0
     m = model_map.get(safe)
     if m and pname in m.params:
         return float(m.params[pname].value)
@@ -180,7 +204,8 @@ def _run_one_fit(sources_data, model_configs, perturbed_values,
         # the builder's return value, letting the Auto-Fitter iterate
         # only the non-fixed parameters over the full model set.
         from gui.analysis.fitting import (
-            _build_models_on_source as _build_canonical)
+            _build_models_on_source as _build_canonical,
+            resolve_llh_method)
         from gui.analysis.naming import full_param_name, is_fit_param_name
         from gui.analysis.expr_validation import lower_model_expression
 
@@ -287,6 +312,13 @@ def _run_one_fit(sources_data, model_configs, perturbed_values,
             fit_kwargs["llh"] = True
             fit_kwargs["llh_method"] = fcfg.get("llh_method")
             fit_kwargs["scale_covar"] = False
+        # leastsq cannot minimise that likelihood: satlas2 would swap
+        # in SLSQP, which diverges on a hyperfine spectrum, and the
+        # multi-start would then rank its starting points by a broken
+        # fit (update log CB, 2026-09-25).
+        fit_kwargs["method"], _llh_note = resolve_llh_method(
+            {"method": fit_kwargs["method"],
+             "llh": bool(fcfg.get("llh"))})
         fitter.fit(**fit_kwargs)
 
         chi2 = float(fitter.chisqr) if hasattr(fitter, 'chisqr') else 1e30
@@ -313,8 +345,19 @@ def _run_one_fit(sources_data, model_configs, perturbed_values,
             xs = _np.linspace(xd.min(), xd.max(), 500)
             ys = src.evaluate(xs)
             comps = {}
+            bkg_curve = None
             for mname, model in mmap.items():
                 if mname.endswith("_bkg"):
+                    # Kept OUT of `comps` (it is not a lineshape) but
+                    # carried separately so the plot can show it: the
+                    # gap between the total fit and the component
+                    # curves is exactly this, and without a curve of
+                    # its own it looked like the background was
+                    # missing from the fit (2026-09-20).
+                    try:
+                        bkg_curve = model.f(xs).tolist()
+                    except Exception:
+                        pass
                     continue
                 try:
                     comps[mname] = model.f(xs).tolist()
@@ -324,6 +367,7 @@ def _run_one_fit(sources_data, model_configs, perturbed_values,
                 "x_smooth": xs.tolist(),
                 "y_smooth": ys.tolist(),
                 "components": comps,
+                "background": bkg_curve,
             })
 
         # Backward-compatible top-level keys (from first source)
@@ -335,6 +379,7 @@ def _run_one_fit(sources_data, model_configs, perturbed_values,
             "x_smooth": per_source[0]["x_smooth"],
             "y_smooth": per_source[0]["y_smooth"],
             "components": per_source[0]["components"],
+            "background": per_source[0]["background"],
             "per_source": per_source,
             "expr_errors": expr_errors,
         }
@@ -640,11 +685,31 @@ class AutoFitterDialog(QDialog):
         res_lay.addWidget(self._result_label)
 
         self._res_table = QTableWidget()
-        self._res_table.setColumnCount(4)
+        self._res_table.setColumnCount(5)
         self._res_table.setHorizontalHeaderLabels(
-            ["Rank", "\u03c7\u00b2", "\u03c7\u00b2_red", "Parameters"])
+            ["Rank", "\u03c7\u00b2", "\u03c7\u00b2_red",
+             "\u0394\u03c7\u00b2", "Parameters"])
+        _res_tips = [
+            "Ranking by chi-squared; #1 is the best start.",
+            "Chi-squared of this start's converged fit.",
+            "Reduced chi-squared (chi2 / degrees of freedom).",
+            "How much worse this start is than #1. A value of 0 "
+            "means this start landed on the SAME minimum as the "
+            "best one -- its parameters and its preview curve are "
+            "identical, so clicking it will not appear to change "
+            "anything. Several zeros in a row is the good outcome: "
+            "the optimiser found one clear solution from many "
+            "different starting points.",
+            "The fitted value of every varied parameter, background "
+            "included. Double-click the row for the full list in a "
+            "readable table.",
+        ]
+        for _c, _tip in enumerate(_res_tips):
+            _hi = self._res_table.horizontalHeaderItem(_c)
+            if _hi is not None:
+                _hi.setToolTip(_tip)
         self._res_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.Stretch)
+            4, QHeaderView.ResizeMode.Stretch)
         self._res_table.verticalHeader().setVisible(False)
         self._res_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers)
@@ -811,7 +876,7 @@ class AutoFitterDialog(QDialog):
 
                 if self._show_fit.isChecked():
                     self._ax.plot(x_s, y_s, 'r-', lw=1.5,
-                                 label='Fit', zorder=3)
+                                 label='Total fit', zorder=3)
 
                 if self._show_components.isChecked():
                     import matplotlib.pyplot as plt
@@ -821,7 +886,16 @@ class AutoFitterDialog(QDialog):
                         cc = colors[(ci + 1) % len(colors)]
                         self._ax.plot(x_s, np.array(cdata), color=cc,
                                      lw=1, ls='--', alpha=0.7,
-                                     label=cname, zorder=2)
+                                     label=f"{cname} (lineshape)", zorder=2)
+                    # The background the fit found, drawn explicitly:
+                    # the total is lineshape + this, so the constant
+                    # offset between the red and dashed curves stops
+                    # being a mystery.
+                    bkg = result.get("background")
+                    if bkg is not None:
+                        self._ax.plot(x_s, np.array(bkg), color="#8d8d8d",
+                                      lw=1, ls=':', alpha=0.9,
+                                      label='Background', zorder=2)
 
         chi2 = result.get("chi2", 0)
         redchi = result.get("redchi", 0)
@@ -972,6 +1046,7 @@ class AutoFitterDialog(QDialog):
     def _update_results_table(self):
         """Rebuild the top-10 results table from the sorted list."""
         show = self._results[:10]
+        best_chi2 = show[0].get("chi2", 0) if show else 0
 
         self._res_table.blockSignals(True)
         self._res_table.setRowCount(len(show))
@@ -982,6 +1057,17 @@ class AutoFitterDialog(QDialog):
                 row, 1, QTableWidgetItem(f"{r.get('chi2', 0):.2f}"))
             self._res_table.setItem(
                 row, 2, QTableWidgetItem(f"{r.get('redchi', 0):.4f}"))
+            # Distance from the best start. Exact zeros are the
+            # point of the column: they say "same minimum, identical
+            # preview", which the chi2 column (2 dp) cannot.
+            d_chi2 = r.get("chi2", 0) - best_chi2
+            d_item = QTableWidgetItem(
+                "0" if d_chi2 == 0 else f"{d_chi2:.3g}")
+            if d_chi2 == 0 and row > 0:
+                d_item.setToolTip(
+                    "Same minimum as #1 -- identical parameters and "
+                    "an identical preview curve.")
+            self._res_table.setItem(row, 3, d_item)
             # Compact parameter summary
             vals = r.get("fitted_vals", [])
             summary_parts = []
@@ -991,8 +1077,12 @@ class AutoFitterDialog(QDialog):
                 suffix = f"[{vk[2]}]" if len(vk) == 3 else ""
                 summary_parts.append(
                     f"{mc['name']}.{pname}{suffix}={v:.2f}")
-            self._res_table.setItem(
-                row, 3, QTableWidgetItem("  ".join(summary_parts)))
+            p_item = QTableWidgetItem("  ".join(summary_parts))
+            # The column elides, and the background is the LAST
+            # parameter -- so Bkg_p0 was the one that always got cut
+            # off, which read as "the background is not being fitted".
+            p_item.setToolTip("\n".join(summary_parts))
+            self._res_table.setItem(row, 4, p_item)
         self._res_table.blockSignals(False)
 
         # Maintain selection: follow the best (row 0) so the user watches

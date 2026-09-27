@@ -125,5 +125,79 @@ class RebuildChainDiagnosticsTests(unittest.TestCase):
         self.assertEqual(skipped, [])
 
 
+class BurnInCarriedThroughTests(unittest.TestCase):
+    """The walk plot marks the fit's own burn-in, and the corner plot
+    shows only the samples after it -- also when "Update iteration"
+    rebuilds them from the saved chain (2026-09-25)."""
+
+    def setUp(self):
+        _ensure_app()
+        from gui.analysis.project import AnalysisProject
+        self.proj = AnalysisProject("U")
+
+    def tearDown(self):
+        self.proj.deleteLater()
+
+    def test_a_rebuild_uses_the_fits_cut(self):
+        with tempfile.TemporaryDirectory() as td:
+            chain_path = os.path.join(td, "chain_run_1.h5")
+            _write_chain(chain_path)
+            r = {"success": True, "run_number": 1,
+                 "chain_file": chain_path, "diagnostics": {},
+                 "mcmc_burn": 5, "mcmc_thin": 1}
+            self.proj._rebuild_chain_diagnostics(
+                [r], {"walk_plot": True, "correl_plot": True})
+            self.assertEqual(r["diagnostics"]["walk_data"]["burn"], 5)
+            # 20 steps, 5 discarded, 8 walkers
+            self.assertEqual(
+                r["diagnostics"]["correl_data"]["flatchain"].shape,
+                (15 * 8, 2))
+
+    def test_an_old_result_without_a_cut_keeps_everything(self):
+        with tempfile.TemporaryDirectory() as td:
+            chain_path = os.path.join(td, "chain_run_1.h5")
+            _write_chain(chain_path)
+            r = {"success": True, "run_number": 1,
+                 "chain_file": chain_path, "diagnostics": {}}
+            self.proj._rebuild_chain_diagnostics(
+                [r], {"walk_plot": True, "correl_plot": True})
+            self.assertEqual(r["diagnostics"]["walk_data"]["burn"], 0)
+            self.assertEqual(
+                r["diagnostics"]["correl_data"]["flatchain"].shape,
+                (20 * 8, 2))
+
+    def test_the_saved_files_carry_the_cut_to_the_results_tab(self):
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
+        from gui.results_tab import ResultsTab
+        chain = _write_chain(os.path.join(tempfile.mkdtemp(), "c.h5"))
+        chain = chain[:, :, [0, 2]]
+        diags = {"walk_data": {"labels": ["centroid", "FWHMG"],
+                               "chain": chain, "burn": 7},
+                 "correl_data": {"labels": ["centroid", "FWHMG"],
+                                 "flatchain": chain[7:].reshape(-1, 2)}}
+        with tempfile.TemporaryDirectory() as td:
+            self.proj._save_diagnostic_plots(diags, 1, td, "png", 60)
+            names = sorted(os.listdir(td))
+            for want in ("walk_plot_run_1.png", "walk_plot_run_1.npz",
+                         "correl_plot_run_1.png", "correl_plot_run_1.npz"):
+                self.assertIn(want, names)
+            walk = dict(np.load(os.path.join(td, "walk_plot_run_1.npz"),
+                                allow_pickle=True))
+            self.assertEqual(int(walk["burn"]), 7)
+            # The live renderer reads the cut back and draws it.
+            fig = Figure()
+            ResultsTab._render_walk_plot(None, fig, walk)
+            cut = [ln for ax in fig.axes for ln in ax.get_lines()
+                   if ln.get_gid() == "burn_in_line"]
+            self.assertEqual(len(cut), 2)
+            correl = dict(np.load(os.path.join(td, "correl_plot_run_1.npz"),
+                                  allow_pickle=True))
+            fig2 = Figure()
+            ResultsTab._render_correl_plot(None, fig2, correl)
+            self.assertTrue(fig2.axes)
+
+
 if __name__ == "__main__":
     unittest.main()

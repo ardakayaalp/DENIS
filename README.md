@@ -6,7 +6,7 @@
 
 A comprehensive tool for **Collinear Laser Spectroscopy (CLS)**: run-time estimation, pre-analysis, SATLAS2-based fitting, and results visualization.
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Developer:** [Arda Kayaalp](https://ardakayaalp.com/) (arda.kayaalp@kuleuven.be)
 **Framework:** PySide6 (Qt6) + matplotlib + satlas2 + clstools
 
@@ -57,23 +57,30 @@ If `uv` is already installed: `uv sync && uv run python gui.py`.
 
 ### Analysis Tab
 - Block-based fitting pipeline: Source -> Model -> Fitter -> Output
-- **Models:** HFS (sidepeaks, Racah), Voigt, Skewed Voigt, Exponential Decay, Piecewise Constant, Polynomial. **Methods:** leastsq, least_squares, slsqp, emcee (MCMC), nelder, powell, cobyla. **Statistics:** Chi-square, Gaussian LLH, Poisson LLH
-- Separate (per-file, parallel) and simultaneous fitting; opt-in parameter sharing, expression constraints with live validation, Gaussian priors, MCMC diagnostics (walk/correlation plots, confidence bands, chi-square maps)
+- **Models:** HFS (sidepeaks, Racah), Voigt, Skewed Voigt, Exponential Decay, Piecewise Constant, Polynomial, each with an optional polynomial background. **Methods:** leastsq, least_squares, slsqp, emcee (MCMC), nelder, powell, cobyla. **Statistics:** Chi-square, Gaussian LLH, Poisson LLH
+- A **?** guide beside Method & Statistics explains which to use when. A likelihood is never minimised with leastsq (satlas2 would silently switch to SLSQP; DENIS runs nelder and says so), and the sqrt(2) inflation of numerical likelihood error bars can be corrected (opt-in, reported)
+- Separate (per-file, parallel) and simultaneous fitting; opt-in parameter sharing, expression constraints with live validation, Gaussian priors
+- **MCMC diagnostics**: walk plots with the burn-in cut marked, corner plots with filled 2-D credible regions (0.5/1/1.5/2 sigma) and a choice of colour scale, confidence bands, chi-square maps. Burn-in applies to everything (values, errors, correlations, corner plot, band, plotted fit), and emcee / likelihood fits report statistics recomputed from the residuals
 - **Binning as first-class controls**: `Per scan step` (default), `Auto`, `Fixed bin count`, `Fixed bin width`; a `Bin multiple` spin groups adjacent steps; per-file binning overrides via right-click; optional common-grid re-binning for simultaneous fits
 - A three-tab **Binning dialog** (Summary occupancy table, Run detail with bin edges + a measured 1 V ~ N MHz scale strip + aliasing warnings, Compare heatmap); binning warnings land in the fit report and `binning_summary.csv`
 - Multi-start parallel leastsq **Auto-Fitter** to seed initial guesses; **Update iteration** regenerates outputs into the existing iteration without re-fitting (walk/correlation rebuilt from saved chains)
-- **Isotope Shift tab**: weighted averages with Birge inflation, systematic errors from cooler/laser jitter, a full per-shift error budget, and a run preview panel
-- **Reference Centroid Correction (GP)**: time-dependent drift correction following van den Borne (2025). Fit reference scans in a Reference Project, train a GP (RBF / Matern(5/2) / composite kernel via PyMC v5), and apply per-run corrections consistently in fits, merges, and the Auto-Fitter; correlated corrections partially cancel in shifts via the GP cross-covariance
+- **Isotope Shifts / Centroid Correction tab**: weighted averages with Birge inflation, systematic errors from cooler/laser jitter, a full per-shift error budget, and a run preview panel. A Reference Project is listed automatically and marked as the shift reference
+- **Reference Centroid Correction (GP)**: time-dependent drift correction following van den Borne (2025), in its own tab. Fit reference scans in a Reference Project, train a GP (RBF / Matern(5/2) / composite kernel via PyMC v5), exclude individual reference runs, and apply per-run corrections consistently in fits, merges, and the Auto-Fitter; correlated corrections partially cancel in shifts via the GP cross-covariance. A two-panel GP figure and a Centroids diagnostic show the drift and each run's corrected centroid
+- **Cooler-voltage calibration**: 171Yb+/173Yb+ calibration projects fitted over a grid of assumed cooler offsets; each isotope's hyperfine A(dV) line meets its literature value, and the crossing of the two isotope lines gives the offset (validated against the May 2026 Yb report). The offset is applied on top of each file's voltage, and iterations carry it in their name (`iter_001_-30V_CO`)
+- **Systematics tab**: scans the cooler offset across the calibrated interval and refits the whole chain at every step (reference fit, GP retraining, per-file corrections, sample fits, isotope shifts), seeding each step from its neighbours. The band per parameter uses the definition you choose (half/full width, std, max or RMS deviation); flagged steps can be re-run with edited seeds; results go to the Results tab
+- A project can be converted between **sample, reference, and cooler-calibration** from its tab's right-click menu
 - On-plot fit-values box, shade-under-fit, and per-plot-type styling via the Output block's **Plot Options...** dialog
 
 ### Results Tab
 - Browse everything by project and iteration (fresh results marked NEW); live re-rendering of fit, tracker, and diagnostic plots from their `.npz` data
 - Plot edits persist in `.style.json` sidecars; **copy/paste plot style** between plots with a property checklist (bulk paste supported)
 - **Export data as CSV** (data, errors, model, residuals, fit curve) with column/delimiter/precision control; export single items or whole iterations
+- CSV viewer shaded by run, sortable and filterable; fit reports syntax-highlighted
 - Project and iteration notes with autosave; on load, exactly the saved iterations are restored (Refresh All re-scans the directory)
 
 ### Tools Menu
 - **Schmidt Moment Calculator** (single- and two-particle), **Shell Configuration Plotter** (spherical shell model, Nordheim rule), **Unit Converter** (nm, cm^-1, MHz, GHz, THz, eV), **SHG Crystal Angle Calculator** (Type I, BBO/KDP/LBO), **SFG / DFG Calculator** (mixed-unit inputs), **Quick Plot** (CSV/TSV or pasted data)
+- **ASDF Viewer**: inspect raw run files -- drop them on the window or right-click a run in Pre-Analysis or a Source block. Header entries as stored, the event table with named columns and per-column statistics, the full ASDF tree; hover a column for its meaning and unit. Large drops load on worker processes
 - **NIST ASD Browser**: in-app NIST Atomic Spectra Database browser + multi-step excitation **scheme finder** -- level/line tables and diagrams (lifetime-encoded opacity), air/vacuum toggle, offline cache, ranked 1-3-step scheme search with laser roles, branching-ratio and isobar-contamination checks, CSV export, save-file persistence
 
 ### UI & Settings
@@ -82,7 +89,8 @@ If `uv` is already installed: `uv sync && uv run python gui.py`.
 - **Plot editor everywhere**: right-click any canvas -> *Edit plot...* -- six tabs with real font pickers, add/remove annotations and lines, per-artist position/rotation/z-order, log scales, and its own Ctrl+Z/Ctrl+Y undo
 - App-wide spinbox undo/redo and Ctrl+C/Ctrl+V; wheel-focus guard (scrolling never edits an unfocused field); zoom (Ctrl+= / Ctrl+- / Ctrl+0)
 - Settings in `settings/settings.yaml`: theme, plot defaults (global + per-plot-type), UI scale, path auto-conversion, output/fitting defaults
-- Session log always written to `logs/denis_<timestamp>.log` (newest 20 kept, crash hook included); a Verbose toggle raises it to DEBUG
+- Session log always written to `logs/denis_<timestamp>.log` (newest 20 kept, crash hook included, native crashes traced); a Verbose toggle raises it to DEBUG
+- Loading a session shows its progress; tooltips appear as compact boxes by the pointer
 
 ---
 

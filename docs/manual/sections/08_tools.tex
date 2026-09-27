@@ -125,6 +125,30 @@ pan, zoom, and image export --- useful for sanity-checking
 calibration files, ion-source trends, or any tabular data adjacent to
 a CLS measurement.
 
+\subsection{ASDF Viewer}
+
+\menu{Tools $\rightarrow$ ASDF Viewer\dots} shows what is actually in
+a run file, as stored. Drop \code{.asdf} or \code{.vasdf} files on the
+window, use \app{Open\dots}, or right-click a run in the Pre-Analysis
+file list or in an Analysis Source block and choose \app{View
+ASDF\dots}; the viewer opens with that run selected (a \code{.vasdf}
+split opens its parent run). \app{Header} lists every non-array entry
+with its type; values are unconverted, and a note marks where \denis{}
+reads one differently (\code{CoolerVoltage} is stored divided by
+10\,000). \app{Tables} shows the event table \code{raw}, one row per
+event, with columns named from \code{raw\_header}, the calibration
+arrays side by side, and per-column minimum, maximum, mean and
+distinct values (which PMT channels fired, the ToF range); a selection
+copies as tab-separated text and a table exports to CSV. \app{Tree}
+shows the complete ASDF tree. Hovering a column header or a header
+key explains the entry and its unit: \code{timestamp} is Unix time in
+seconds, \code{voltage} the scan-voltage setpoint in V, \code{time}
+the time of flight in \si{\micro\second}, \code{channel} the PMT
+channel, \code{bunch\_number} the bunch index over the whole run, and
+\code{cooler} the cooler voltage divided by 10\,000. Files load in the
+background; a drop of 30 files or more is read on up to eight worker
+processes, about four times faster than one by one.
+
 \subsection{NIST ASD Browser}
 
 \menu{Tools $\rightarrow$ NIST ASD Browser\dots} is a full in-app

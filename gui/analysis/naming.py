@@ -129,10 +129,49 @@ def source_name_for_descriptor(desc: dict) -> str:
     return source_name_for_path(desc["path"])
 
 
+#: Prefix of every background-polynomial coefficient row in a Model
+#: block: ``Bkg_p0`` (constant), ``Bkg_p1`` (slope), ``Bkg_p2`` ...
+BKG_PREFIX = "Bkg_p"
+
+
 def full_param_name(source_name: str, model_name: str,
                     param_name: str) -> str:
     """Compose the full lmfit parameter name for one (source, model, param)."""
     safe = safe_model_name(model_name)
-    if param_name == "Bkg_p0":
-        return f"{source_name}___{safe}_bkg___p0"
+    if param_name.startswith(BKG_PREFIX):
+        # Every background coefficient lives on the separate summed
+        # Polynomial, whose own parameters are named p0, p1, ... --
+        # so Bkg_p1 is ..._bkg___p1, exactly like Bkg_p0 (2026-09-20).
+        return (f"{source_name}___{safe}_bkg"
+                f"___{bkg_param_key(param_name)}")
     return f"{source_name}___{safe}___{param_name}"
+
+
+def bkg_param_key(param_name: str) -> str:
+    """``"Bkg_p1"`` -> ``"p1"``, the key satlas2's Polynomial uses.
+
+    Its own parameters are p0, p1, ..., so only the ``Bkg_`` part
+    comes off -- slicing the full ``Bkg_p`` prefix yields a bare
+    ``"1"``, which matches nothing and silently drops whatever was
+    being set.
+    """
+    return param_name[len("Bkg_"):]
+
+
+def background_coefficients(params) -> list[str]:
+    """``["Bkg_p0", "Bkg_p1", ...]`` present in *params*, lowest first.
+
+    The single place that decides what counts as a background
+    coefficient, so the fitter, the auto-fitter and the UI cannot
+    disagree about the order they are in -- which would silently
+    swap a slope for an offset.
+    """
+    found = []
+    for name in params or ():
+        if not name.startswith(BKG_PREFIX):
+            continue
+        try:
+            found.append((int(name[len(BKG_PREFIX):]), name))
+        except ValueError:
+            continue          # not Bkg_p<int>; not ours
+    return [name for _, name in sorted(found)]

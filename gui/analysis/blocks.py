@@ -1330,9 +1330,10 @@ class SourceBlock(AnalysisBlock):
     BLOCK_TYPE = "Source"
     BLOCK_COLOR = "#2196F3"
     # Narrowed 476 → 420 (2026-07 feedback): the input fields had a
-    # band of unused width. Width is persisted per project, so saved
-    # blocks keep their stored width.
-    BLOCK_WIDTH = 420
+    # band of unused width. Widened 20 % to 504 (2026-09-22 request).
+    # Width is persisted per project, so saved blocks keep their
+    # stored width; this is the width a NEW Source block starts at.
+    BLOCK_WIDTH = 504
 
     def __init__(self, name="Source_1", parent=None):
         super().__init__(name, parent)
@@ -1860,6 +1861,23 @@ class SourceBlock(AnalysisBlock):
 
         layout.addWidget(adv_grp)
 
+        # ── Cooler offset ──
+        # Added to whatever cooler voltage each file would otherwise
+        # use, rather than replacing it (that is the Override below).
+        # Populated by the Cooler Calibration tab, or typed here.
+        self._cooler_offset = _make_double(
+            0.0, -10000.0, 10000.0, 3, 0.1,
+            tooltip="Cooler-voltage offset [V], added to every file's "
+                    "own cooler voltage.\n\n"
+                    "This is the calibration constant from the Cooler "
+                    "Calibration tab: the logged cooler voltage is off "
+                    "by a fixed amount, which shifts the beam energy "
+                    "and so the whole frequency axis.\n\n"
+                    "Unlike the Override below it keeps the "
+                    "differences between runs -- it only moves them "
+                    "all together. 0 = use the files as recorded.")
+        adv_form.addRow("Cooler offset [V]:", self._cooler_offset)
+
         # ── Cooler / Laser Override ──
         self._ovr_enable = QCheckBox("Cooler / Laser Override")
         self._ovr_enable.setToolTip(
@@ -2366,6 +2384,14 @@ class SourceBlock(AnalysisBlock):
                     if sf_path and not is_merged else None)
         cal_act = menu.addAction(
             "Calibration...  (overridden)" if cal_spec else "Calibration...")
+        # The raw file behind the row -- a merged spectrum has none.
+        menu.addSeparator()
+        view_asdf_act = menu.addAction("View ASDF...")
+        view_asdf_act.setToolTip(
+            "No ASDF behind a merged spectrum." if is_merged else
+            "Open this run in Tools \u25b8 ASDF Viewer: the header, the "
+            "event table and the whole file tree, as stored.")
+        view_asdf_act.setEnabled(not is_merged and bool(entry.get("path")))
         cal_act.setToolTip(
             "Inspect this run's DAC->HV voltage calibration: the fit, the\n"
             "residuals, and what it costs in MHz. Exclude bad points, borrow\n"
@@ -2392,6 +2418,10 @@ class SourceBlock(AnalysisBlock):
             copy_chk_act.setEnabled(False)
             clear_act.setEnabled(False)
         chosen = menu.exec(container.mapToGlobal(pos))
+        if chosen is not None and chosen is view_asdf_act:
+            from gui.asdf_viewer import open_in_viewer
+            open_in_viewer([entry["path"]], anchor=self)
+            return
         if chosen is None:
             return
         if chosen is edit_act:
@@ -2935,6 +2965,7 @@ class SourceBlock(AnalysisBlock):
             "bin_count": self._bin_count_spin.value(),
             "bin_width_mhz": self._bin_width_spin.value(),
             "step_multiple": self._step_mult_spin.value(),
+            "cooler_offset_v": self._cooler_offset.value(),
             "override_enabled": self._ovr_enable.isChecked(),
             "cooler_override": self._cooler_spin.value(),
             "laser_override": self._laser_spin.value(),
@@ -3900,6 +3931,7 @@ class SourceBlock(AnalysisBlock):
         d["bin_count"] = self._bin_count_spin.value()
         d["bin_width_mhz"] = self._bin_width_spin.value()
         d["step_multiple"] = self._step_mult_spin.value()
+        d["cooler_offset_v"] = self._cooler_offset.value()
         d["override_enabled"] = self._ovr_enable.isChecked()
         d["cooler_override"] = self._cooler_spin.value()
         d["laser_override"] = self._laser_spin.value()
@@ -3977,8 +4009,13 @@ class SourceBlock(AnalysisBlock):
                 e["widget"].deleteLater()
         self._file_entries.clear()
         self._refresh_master_check_state()
+        from gui.load_progress import report as _report
         for fd in d.get("files", []):
             path = maybe_convert_path(fd["path"])
+            # Opening each ASDF is what makes a load slow; say which
+            # one. No-op unless a progress window is up.
+            if isinstance(path, str):
+                _report(os.path.basename(path))
             # Backward compat: older YAMLs (before the to_dict skip)
             # wrote merged entries into "files" too. Skip those here;
             # the real merged entry is rebuilt from "merged_entries".
@@ -4068,6 +4105,8 @@ class SourceBlock(AnalysisBlock):
         ovr_on = d.get("override_enabled",
                        d.get("cooler_override", 0) > 0 or
                        d.get("laser_override", 0) > 0)
+        self._cooler_offset.setValue(
+            float(d.get("cooler_offset_v", 0.0) or 0.0))
         self._ovr_enable.setChecked(ovr_on)
         self._cooler_spin.setValue(d.get("cooler_override", 0.0))
         self._laser_spin.setValue(d.get("laser_override", 0.0))
@@ -4101,6 +4140,17 @@ class SourceBlock(AnalysisBlock):
 #  Model Block
 # ══════════════════════════════════════════════════════════════════
 
+#: Background shapes offered per lineshape model, as
+#: ``(label, polynomial order)``. Constant is the default and is
+#: what every model had before 2026-09-20, so saved projects that
+#: carry no ``bkg_order`` reload unchanged.
+_BKG_ORDERS = (
+    ("Constant", 0),
+    ("Linear", 1),
+    ("Quadratic", 2),
+)
+
+
 class ModelBlock(AnalysisBlock):
     """Model block: HFS model parameters, background, peak amplitudes."""
     BLOCK_TYPE = "Model"
@@ -4132,6 +4182,26 @@ class ModelBlock(AnalysisBlock):
         self._type_combo.setFixedWidth(90)
         self._type_combo.currentTextChanged.connect(self._on_type_changed)
         top_row.addWidget(self._type_combo)
+
+        self._bkg_label = QLabel("Bkg:")
+        top_row.addWidget(self._bkg_label)
+        self._bkg_combo = QComboBox()
+        for _txt, _ord in _BKG_ORDERS:
+            self._bkg_combo.addItem(_txt, userData=_ord)
+        self._bkg_combo.setFixedWidth(92)
+        self._bkg_combo.setToolTip(
+            "Shape of this model's background, fitted as a polynomial\n"
+            "summed onto the lineshape:\n"
+            "  Constant   Bkg_p0\n"
+            "  Linear     Bkg_p0 + Bkg_p1\u00b7x\n"
+            "  Quadratic  Bkg_p0 + Bkg_p1\u00b7x + Bkg_p2\u00b7x\u00b2\n\n"
+            "Each coefficient becomes its own row below, free or fixed\n"
+            "like any other parameter. Linear is the usual choice when\n"
+            "laser power or transmission drifts across the scan; it\n"
+            "used to need a second Model block of type Polynomial.")
+        self._bkg_combo.currentIndexChanged.connect(
+            self._on_bkg_order_changed)
+        top_row.addWidget(self._bkg_combo)
         top_row.addWidget(QLabel("Source:"))
         self._source_combo = QComboBox()
         # Disabled: per-model source assignment is not wired into the fitter
@@ -4152,7 +4222,10 @@ class ModelBlock(AnalysisBlock):
         import_btn = QPushButton("Import from Pre-Analysis")
         import_btn.setToolTip(
             "Import HFS model parameters (I, J, A, B, centroid, etc.)\n"
-            "from the Pre-Analysis tab's HFS model overlay")
+            "from the Pre-Analysis tab's HFS model overlay.\n"
+            "The background SHAPE comes across too, so a sloping\n"
+            "baseline tuned against the data there arrives as\n"
+            "Bkg_p0 + Bkg_p1 instead of a bare constant.")
         import_btn.clicked.connect(self._import_from_preanalysis)
         import_row.addWidget(import_btn)
         retrieve_btn = QPushButton("Retrieve Last Fit")
@@ -4283,8 +4356,89 @@ class ModelBlock(AnalysisBlock):
         # Build default HFS parameter table
         self._build_hfs_params()
 
+    def _apply_saved_params(self, params):
+        """Push a ``{name: {value, vary, min, max, expr}}`` map onto
+        whatever rows currently exist.
+
+        Shared by ``from_dict`` and the background-order rebuild so a
+        reload and an order change restore a row identically. Names
+        with no matching row are ignored -- that is what makes
+        dropping Quadratic back to Linear lossless in one direction
+        and harmless in the other.
+        """
+        for row in self._param_rows:
+            p = params.get(row["name"])
+            if p is None:
+                continue
+            row["value"].setValue(p.get("value", 0.0))
+            row["bounds"].set_bounds(
+                p.get("min", -1e12), p.get("max", 1e12),
+                p.get("min_enabled"), p.get("max_enabled"))
+            if row["name"] not in _NON_FIT_PARAMS_FOR_VALIDATION:
+                saved_vary = p.get("vary", True)
+                row["last_empty_mode"] = "Free" if saved_vary else "Fixed"
+                expr = (p.get("expr") or "").strip()
+                if not expr:
+                    combo = row["mode"]
+                    combo.blockSignals(True)
+                    try:
+                        combo.setCurrentText(row["last_empty_mode"])
+                    finally:
+                        combo.blockSignals(False)
+            expr_item = self._param_table.item(row["expr_row"], _PT_EXPR)
+            if expr_item:
+                expr_item.setText(p.get("expr", ""))
+        for row in self._param_rows:
+            _apply_mode_combo_color(row["mode"])
+
+    def _bkg_order(self):
+        """Polynomial order of this block's background (0 = constant)."""
+        d = self._bkg_combo.currentData()
+        return int(d) if d is not None else 0
+
+    def _bkg_param_specs(self):
+        """Parameter rows for the background, lowest coefficient first.
+
+        Returned as ``_set_param_table`` tuples so the three model
+        builders that own a background share one definition.
+        """
+        specs = []
+        for n in range(self._bkg_order() + 1):
+            # A constant is in counts; each higher coefficient is per
+            # MHz^n, so it needs 3 more decimals than the last to be
+            # editable at all.
+            specs.append((f"Bkg_p{n}", 0.0, True, -1e6, 1e6, 4 + 3 * n))
+        return specs
+
+    def _on_bkg_order_changed(self, *_):
+        """Rebuild the table for a new background order WITHOUT
+        discarding what the user already typed -- unlike a model-type
+        change, the parameter set only grows or shrinks at the tail,
+        so everything that survives should keep its value, bounds and
+        mode."""
+        keep = {}
+        for row in self._param_rows:
+            expr_item = self._param_table.item(row["expr_row"], _PT_EXPR)
+            keep[row["name"]] = {
+                "value": row["value"].value(),
+                "vary": row["mode"].currentText() == "Free",
+                "min": row["bounds"].get_min(),
+                "max": row["bounds"].get_max(),
+                "min_enabled": row["bounds"].is_min_enabled(),
+                "max_enabled": row["bounds"].is_max_enabled(),
+                "expr": expr_item.text() if expr_item else "",
+            }
+        self._on_type_changed(self._type_combo.currentText())
+        self._apply_saved_params(keep)
+        self.block_changed.emit()
+
     def _on_type_changed(self, text):
         is_hfs = (text == "HFS")
+        # Only the lineshape models carry a background of their own;
+        # Polynomial / Piecewise / Exponential Decay ARE backgrounds.
+        has_bkg = text in ("HFS", "Voigt", "Skewed Voigt")
+        self._bkg_label.setVisible(has_bkg)
+        self._bkg_combo.setVisible(has_bkg)
         self._hfs_settings.setVisible(is_hfs)
         self._sidepeak_grp.setVisible(is_hfs)
         self._peaks_toggle.setVisible(is_hfs)
@@ -4320,9 +4474,8 @@ class ModelBlock(AnalysisBlock):
             ("scale", 100.0, True, 0.0, 1e8),
             ("FWHMG", 50.0, True, 0.0, 1e4),
             ("FWHML", 50.0, True, 0.0, 1e4),
-            ("Bkg_p0", 0.0, True, -1e6, 1e6),
         ]
-        self._set_param_table(params)
+        self._set_param_table(params + self._bkg_param_specs())
 
     def _build_voigt_params(self):
         params = [
@@ -4330,9 +4483,8 @@ class ModelBlock(AnalysisBlock):
             ("mu", 0.0, True, -1e8, 1e8),
             ("FWHMG", 50.0, True, 0.0, 1e4),
             ("FWHML", 50.0, True, 0.0, 1e4),
-            ("Bkg_p0", 0.0, True, -1e6, 1e6),
         ]
-        self._set_param_table(params)
+        self._set_param_table(params + self._bkg_param_specs())
 
     def _build_skewvoigt_params(self):
         params = [
@@ -4341,9 +4493,8 @@ class ModelBlock(AnalysisBlock):
             ("FWHMG", 50.0, True, 0.0, 1e4),
             ("FWHML", 50.0, True, 0.0, 1e4),
             ("Skew", 0.0, True, -10.0, 10.0),
-            ("Bkg_p0", 0.0, True, -1e6, 1e6),
         ]
-        self._set_param_table(params)
+        self._set_param_table(params + self._bkg_param_specs())
 
     def _build_expdecay_params(self):
         params = [
@@ -4373,14 +4524,20 @@ class ModelBlock(AnalysisBlock):
         self._param_table.setRowCount(len(params))
         self._param_rows = []
 
-        for i, (name, value, vary, pmin, pmax) in enumerate(params):
+        for i, row_spec in enumerate(params):
+            # An optional 6th element overrides the spinbox decimals:
+            # a background SLOPE is ~0.02 counts/MHz and a curvature
+            # ~1e-5, both of which round away at the default 4 dp.
+            name, value, vary, pmin, pmax = row_spec[:5]
+            decimals = row_spec[5] if len(row_spec) > 5 else 4
             # Name (read-only)
             name_item = QTableWidgetItem(name)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._param_table.setItem(i, _PT_PARAM, name_item)
 
             # Value (spinbox)
-            val_spin = _make_analysis_spin(value, -1e12, 1e12, 4, 1.0)
+            val_spin = _make_analysis_spin(
+                value, -1e12, 1e12, decimals, 1.0)
             val_spin.valueChanged.connect(lambda v: self.block_changed.emit())
             self._param_table.setCellWidget(i, _PT_VALUE, val_spin)
 
@@ -4617,11 +4774,22 @@ class ModelBlock(AnalysisBlock):
         except Exception:
             return
 
-        lines = hfs.lines
+        try:
+            lines = list(hfs.lines)
+        except Exception:                                # noqa: BLE001
+            return
         self._peak_lines = list(lines)
         self._peaks_table.setRowCount(len(lines))
         for i, label in enumerate(lines):
-            racah_val = hfs.params[f"Amp{label}"].value
+            # Guarded because from_dict calls this during a LOAD: an
+            # exception escaping here would leave the restore
+            # half-applied, and PySide6 turns an exception inside a
+            # slot into an abort -- a silent crash with a half-built
+            # session behind it (2026-09-25).
+            try:
+                racah_val = hfs.params[f"Amp{label}"].value
+            except Exception:                            # noqa: BLE001
+                racah_val = 1.0
 
             name_item = QTableWidgetItem(label)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -4780,6 +4948,14 @@ class ModelBlock(AnalysisBlock):
                 return
             panel = panels[names.index(choice)]
         mp = panel.get_model_params()
+        # Adopt the background SHAPE before the values: the extra
+        # Bkg_p<N> rows have to exist before the loop below can fill
+        # them, or a linear baseline tuned in Pre-Analysis would
+        # arrive here as a bare constant (2026-09-20).
+        pa_order = int(mp.get("bkg_order", 0) or 0)
+        b_idx = self._bkg_combo.findData(pa_order)
+        if b_idx >= 0 and b_idx != self._bkg_combo.currentIndex():
+            self._bkg_combo.setCurrentIndex(b_idx)
         # Map pre-analysis params to our table
         mapping = {
             "I": mp.get("I", 3.5),
@@ -4794,6 +4970,8 @@ class ModelBlock(AnalysisBlock):
             "FWHMG": mp.get("fwhm_g", 50.0),
             "FWHML": mp.get("fwhm_l", 50.0),
             "Bkg_p0": mp.get("bkg", 0.0),
+            "Bkg_p1": mp.get("bkg_p1", 0.0),
+            "Bkg_p2": mp.get("bkg_p2", 0.0),
         }
         for row in self._param_rows:
             if row["name"] in mapping:
@@ -4889,9 +5067,11 @@ class ModelBlock(AnalysisBlock):
             pname = row["name"]
             # Handle background parameter naming
             lookup = pname
-            if pname == "Bkg_p0":
-                # Background p0 collected from the separate _bkg model above.
-                lookup = "_bkg_p0"
+            if pname.startswith("Bkg_p"):
+                # Every background coefficient is collected from the
+                # separate _bkg model above, under a "_bkg_" prefix.
+                from gui.analysis.naming import bkg_param_key
+                lookup = f"_bkg_{bkg_param_key(pname)}"
             if lookup in fitted:
                 avg = float(_np.mean(fitted[lookup]))
                 row["value"].setValue(avg)
@@ -4930,6 +5110,7 @@ class ModelBlock(AnalysisBlock):
     def to_dict(self):
         d = super().to_dict()
         d["model_type"] = self._type_combo.currentText()
+        d["bkg_order"] = self._bkg_order()
         d["source_assign"] = self._source_combo.currentText()
         d["peak_shape"] = self._peak_combo.currentText()
         d["racah"] = self._racah_check.isChecked()
@@ -4969,6 +5150,17 @@ class ModelBlock(AnalysisBlock):
         idx = self._type_combo.findText(d.get("model_type", "HFS"))
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
+        # Before the params loop: the order decides how many Bkg_p<N>
+        # ROWS exist, and the loop can only fill rows that are there.
+        # Absent in a pre-2026-09-20 save, which means Constant.
+        b_idx = self._bkg_combo.findData(int(d.get("bkg_order", 0) or 0))
+        if b_idx >= 0 and b_idx != self._bkg_combo.currentIndex():
+            self._bkg_combo.blockSignals(True)
+            try:
+                self._bkg_combo.setCurrentIndex(b_idx)
+            finally:
+                self._bkg_combo.blockSignals(False)
+            self._on_type_changed(self._type_combo.currentText())
         idx = self._source_combo.findText(d.get("source_assign", ""))
         if idx >= 0:
             self._source_combo.setCurrentIndex(idx)
@@ -5029,6 +5221,20 @@ class ModelBlock(AnalysisBlock):
 
         # Restore peak amplitudes
         saved_amps = d.get("peak_amplitudes", {})
+        # The rows have to belong to the I / J just restored. Nothing
+        # above rebuilds them -- the params loop sets the spins with
+        # signals blocked -- so the table still described the spin the
+        # block was CREATED with: a saved 171Yb model (I=1/2, three
+        # lines) reloaded showing the default 21 Ge-like rows, and
+        # every saved intensity was dropped because no label matched
+        # (2026-09-25). Rebuilt only when the labels actually differ,
+        # since rebuilding imports satlas2.
+        if saved_amps:
+            current = {self._peaks_table.item(i, 0).text()
+                       for i in range(self._peaks_table.rowCount())
+                       if self._peaks_table.item(i, 0)}
+            if current != set(saved_amps):
+                self._rebuild_peak_table()
         if saved_amps and self._peaks_table.rowCount() > 0:
             for i in range(self._peaks_table.rowCount()):
                 label_item = self._peaks_table.item(i, 0)
@@ -5087,7 +5293,9 @@ class FitterBlock(AnalysisBlock):
         layout.addWidget(mode_grp)
 
         # ── Method & Statistics ──
-        method_grp = QGroupBox("Method & Statistics")
+        # Qt reads a single & as a mnemonic, so the box read
+        # "Method _Statistics" on screen.
+        method_grp = QGroupBox("Method && Statistics")
         method_form = QFormLayout(method_grp)
         method_form.setContentsMargins(4, 8, 4, 4)
 
@@ -5105,7 +5313,22 @@ class FitterBlock(AnalysisBlock):
             "leastsq", "least_squares", "slsqp", "emcee",
             "nelder", "powell", "cobyla",
         ])
-        method_form.addRow("Method:", self._method_combo)
+        # "?" opens a practical guide to these choices (fitter_help.py):
+        # which minimiser, which statistics, where the error bars come
+        # from, and how to set up emcee.
+        from gui.analysis.fitter_help import SquareToolButton
+        self._method_help_btn = SquareToolButton(
+            "?", match=self._method_combo)
+        self._method_help_btn.setObjectName("fitter_method_help")
+        self._method_help_btn.setToolTip(
+            "Which method and statistics to use — a practical guide")
+        self._method_help_btn.clicked.connect(self._show_method_help)
+        _method_row = QHBoxLayout()
+        _method_row.setContentsMargins(0, 0, 0, 0)
+        _method_row.setSpacing(4)
+        _method_row.addWidget(self._method_combo, 1)
+        _method_row.addWidget(self._method_help_btn)
+        method_form.addRow("Method:", _method_row)
 
         self._stats_combo = QComboBox()
         self._stats_combo.setToolTip(
@@ -5125,6 +5348,42 @@ class FitterBlock(AnalysisBlock):
         self._stats_combo.setCurrentText(
             _fd.get("default_statistics", "Chi-square"))
         method_form.addRow("Statistics:", self._stats_combo)
+
+        # A likelihood is one number; leastsq/least_squares minimise a
+        # residual vector, so the combination is not a fit anyone asked
+        # for -- satlas2 takes it and quietly runs SLSQP, which on a
+        # hyperfine spectrum diverges to a nonsense centroid and draws
+        # the model off the data (Arda, 2026-09-25).
+        # fitting.resolve_llh_method substitutes a scalar minimiser and
+        # notes it in the report; this says so before the fit runs.
+        self._llh_method_hint = QLabel()
+        self._llh_method_hint.setWordWrap(True)
+        self._llh_method_hint.setStyleSheet("color:#c97800;")
+        self._llh_method_hint.hide()
+        method_form.addRow(self._llh_method_hint)
+        # lmfit's numerical error bars assume a chi-square; under a
+        # likelihood they come out sqrt(2) too large. Off by default:
+        # the numbers only change when the user chooses to.
+        self._llh_err_fix = QCheckBox(
+            "Correct likelihood error bars (\u00f7\u221a2)")
+        self._llh_err_fix.setChecked(False)
+        self._llh_err_fix.setToolTip(
+            "For a Poisson or Gaussian LLH fit with nelder, powell, cobyla\n"
+            "or slsqp, lmfit estimates the error bars as 2 x inverse(Hessian)\n"
+            "-- right for a chi-square, but satlas2 minimises -ln L (half a\n"
+            "chi-square) under a likelihood, so they come out sqrt(2) too\n"
+            "large. Tick to divide them by sqrt(2); the fit report says\n"
+            "which was done. Values are not affected, and neither is\n"
+            "emcee. Verified against the curvature of -ln L and the\n"
+            "scatter of 300 simulated spectra.")
+        self._llh_err_fix.hide()
+        method_form.addRow(self._llh_err_fix)
+        self._llh_err_fix.toggled.connect(self._refresh_llh_method_hint)
+        self._method_combo.currentTextChanged.connect(
+            self._refresh_llh_method_hint)
+        self._stats_combo.currentTextChanged.connect(
+            self._refresh_llh_method_hint)
+        self._refresh_llh_method_hint()
 
         self._scale_covar = QCheckBox("Scale covariance")
         # Default OFF: for counting data with absolute Poisson errors (the
@@ -5408,6 +5667,40 @@ class FitterBlock(AnalysisBlock):
         unc_spin = _make_analysis_spin(1.0, 0.0, 1e12, 4, 0.1)
         self._priors_table.setCellWidget(row, 2, unc_spin)
 
+    def _show_method_help(self):
+        from gui.analysis.fitter_help import show_fitter_help
+        return show_fitter_help(self)
+
+    def _refresh_llh_method_hint(self, *_args):
+        """Show which minimiser will really run, and whether its error
+        bars carry lmfit's chi-square factor (with the opt-in fix)."""
+        from gui.analysis.fitting import (
+            llh_errors_inflated, resolve_llh_method)
+        method = self._method_combo.currentText()
+        llh = self._stats_combo.currentText().endswith("LLH")
+        cfg = {"method": method, "llh": llh}
+        used, note = resolve_llh_method(cfg)
+        inflated = llh_errors_inflated(cfg)
+        parts, tips = [], []
+        if note:
+            parts.append(f"⚠ {method} cannot minimise a likelihood; "
+                         f"{used} will be used instead.")
+            tips.append(note)
+        if inflated:
+            if self._llh_err_fix.isChecked():
+                parts.append(f"{used}'s error bars will be divided by "
+                             f"√2 (lmfit assumes a χ²).")
+            else:
+                parts.append(f"⚠ {used}'s error bars come out √2 "
+                             f"too large under a likelihood (lmfit assumes "
+                             f"a χ²) — tick below to correct, "
+                             f"or use emcee.")
+            tips.append(self._llh_err_fix.toolTip())
+        self._llh_method_hint.setText(" ".join(parts))
+        self._llh_method_hint.setToolTip("\n\n".join(tips))
+        self._llh_method_hint.setVisible(bool(parts))
+        self._llh_err_fix.setVisible(inflated)
+
     def get_fitter_config(self):
         stats_map = {
             "Chi-square": {"llh": False, "llh_method": ""},
@@ -5422,6 +5715,7 @@ class FitterBlock(AnalysisBlock):
             "llh": stats["llh"],
             "llh_method": stats["llh_method"],
             "scale_covar": self._scale_covar.isChecked(),
+            "llh_error_correction": self._llh_err_fix.isChecked(),
             "common_grid": self._common_grid_enable.isChecked(),
             "common_grid_width": self._common_grid_width.value(),
         }
@@ -5704,6 +5998,7 @@ class FitterBlock(AnalysisBlock):
         d["method"] = self._method_combo.currentText()
         d["statistics"] = self._stats_combo.currentText()
         d["scale_covar"] = self._scale_covar.isChecked()
+        d["llh_error_correction"] = self._llh_err_fix.isChecked()
         d["mcmc"] = {
             "nwalkers": self._nwalkers.value(),
             "steps": self._nsteps.value(),
@@ -5770,6 +6065,9 @@ class FitterBlock(AnalysisBlock):
         idx = self._stats_combo.findText(d.get("statistics", "Chi-square"))
         if idx >= 0:
             self._stats_combo.setCurrentIndex(idx)
+        self._llh_err_fix.setChecked(
+            bool(d.get("llh_error_correction", False)))
+        self._refresh_llh_method_hint()
         self._scale_covar.setChecked(d.get("scale_covar", False))
         mcmc = d.get("mcmc", {})
         self._nwalkers.setValue(mcmc.get("nwalkers", 50))

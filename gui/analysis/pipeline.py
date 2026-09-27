@@ -113,6 +113,25 @@ def prepare_run_data(
                   if source_config.get("override_enabled") else 0)
     cooler_override = src_cooler if src_cooler > 0 else float(
         split_md.get("cooler_v", 0) or 0)
+    # A cooler OFFSET is added on top of whatever value would
+    # otherwise be used -- the override if one is set, else the run's
+    # own recorded voltage. Unlike the override it preserves the
+    # differences between runs, which is what the Yb calibration
+    # measures. Zero offset leaves every byte of the old path alone.
+    cooler_offset = float(source_config.get("cooler_offset_v", 0.0) or 0.0)
+    if cooler_offset:
+        base = (cooler_override if cooler_override > 0
+                else float(run_metadata["cooler_v"]))
+        cooler_override = base + cooler_offset
+        if cooler_override <= 0:
+            raise ValueError(
+                f"cooler offset {cooler_offset:+.3f} V takes the cooler "
+                f"voltage to {cooler_override:.3f} V, which is not a "
+                f"beam energy")
+    run_metadata["cooler_offset_v"] = cooler_offset
+    run_metadata["cooler_v_effective"] = (
+        cooler_override if cooler_override > 0
+        else float(run_metadata["cooler_v"]))
     if cooler_override > 0:
         data.VCoolDiv = 0
         data.VCoolOffset = cooler_override

@@ -17,7 +17,7 @@ gui.results_tab, and lazily gui.split_editor, gui.scan_filter,
 gui.missing_files, gui.manual.viewer, cls_estimations.plotting.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import sys
 import os
@@ -93,6 +93,9 @@ class MainWindow(QMainWindow):
         # before the first open parks in _pending_nist_state.
         self._nist_browser = None
         self._pending_nist_state = None
+        # ASDF viewer: one per window, created on first use; files
+        # opened from any tab collect in it.
+        self._asdf_viewer = None
 
         # Zoom state
         app = QApplication.instance()
@@ -343,6 +346,13 @@ class MainWindow(QMainWindow):
             "and plot levels, transitions and schemes")
         nist_action.triggered.connect(self._open_nist_browser)
         tools_menu.addAction(nist_action)
+        asdf_action = QAction(_icon("eye"), "ASDF Viewer\u2026", self)
+        asdf_action.setStatusTip(
+            "Inspect raw ASDF run files: the header, the event table and "
+            "the whole file tree. Drop files on the window, or right-click "
+            "a run in Pre-Analysis or a Source block.")
+        asdf_action.triggered.connect(lambda: self.open_asdf_viewer())
+        tools_menu.addAction(asdf_action)
 
         # Help menu
         help_menu = menu_bar.addMenu("Help")
@@ -406,25 +416,36 @@ class MainWindow(QMainWindow):
             w.setFont(font)
             w.updateGeometry()
 
-        # Scale analysis block widths (fixed-width in scroll area)
+        # Scale analysis block widths (fixed-width in scroll area).
+        # Scale what is ACTUALLY there by how far the font moved since
+        # the last zoom -- recomputing from BLOCK_WIDTH discarded any
+        # width the user had dragged or loaded from a save file, which
+        # is exactly the "my column widths reverted" complaint
+        # (2026-09-20).
         try:
+            prev_scale = getattr(self, "_block_zoom_scale", 1.0) or 1.0
+            ratio = scale / prev_scale
             for proj in self.analysis_tab._projects:
                 for block in proj._blocks:
-                    new_w = int(block.BLOCK_WIDTH * scale)
-                    block.setFixedWidth(max(new_w, int(
-                        block.MIN_BLOCK_WIDTH * scale)))
+                    new_w = max(int(block.MIN_BLOCK_WIDTH * scale),
+                                int(round(block._current_width * ratio)))
+                    block.setFixedWidth(new_w)
                     block._current_width = new_w
+            self._block_zoom_scale = scale
         except (AttributeError, TypeError):
             pass
 
-        # Re-measure the estimate tab's global-params band: the fonts
-        # just changed, so the content's layout minimum did too (the
+        # Re-measure the estimate tab's column bands: the fonts just
+        # changed, so the contents' layout minimums did too (the
         # ParametersTab constructor measures the same way).
         try:
             pt = self.estimate_tab.params_tab
             need = pt.global_params.preferred_width()
             pt.global_params.setMinimumWidth(need)
             pt.global_params.setMaximumWidth(need + 44)
+            need2 = pt.isotope_list.preferred_width()
+            pt.isotope_list.setMinimumWidth(need2)
+            pt.isotope_list.setMaximumWidth(need2 + 80)
         except (AttributeError, TypeError):
             pass
 
@@ -485,6 +506,8 @@ class MainWindow(QMainWindow):
             "projects": [p.to_dict(include_iterations=True)
                          for p in self.analysis_tab._projects],
             "isotope_shifts": self.analysis_tab._is_tab.to_dict(),
+            "cooler_calibration": self.analysis_tab._cal_tab.to_dict(),
+            "systematics": self.analysis_tab._sys_tab.to_dict(),
         }
 
     def _restore_estimate(self, data):
@@ -519,26 +542,49 @@ class MainWindow(QMainWindow):
 
     def _restore_analysis(self, data):
         """Populate the Analysis tab from a dict."""
-        # Close existing projects and remove IS tab
+        # Close existing projects and remove the permanent tabs
         at = self.analysis_tab
         is_tab = at._is_tab
         while at._project_tabs.count() > 0:
             widget = at._project_tabs.widget(0)
             at._project_tabs.removeTab(0)
-            if widget is is_tab:
-                continue  # don't delete, just remove from tab bar
+            # Ask the Analysis tab which tabs are permanent rather
+            # than listing them here. The list used to be hardcoded as
+            # (Isotope Shifts, GP), so loading a save over an open
+            # session deleted the Cooler Calibration and Systematics
+            # tabs -- and re-adding a deleted C++ object raised inside
+            # a slot, which PySide6 turns into an abort. That is the
+            # "loading a yaml crashes DENIS" report (2026-09-24).
+            if at._is_special_tab(widget):
+                continue  # permanent tabs: unhook, never delete
             if widget in at._projects:
                 at._projects.remove(widget)
             widget.deleteLater()
         at._is_tab_visible = False
+        # Both visibility flags describe the tab BAR, which was just
+        # emptied. Leaving the cooler flag set would convince
+        # _sync_cooler_tab the tab is still there and it would never
+        # come back for the session being loaded.
+        at._cal_tab_visible = False
         # Re-add projects (_add_project will re-show IS tab)
-        for pd in data.get("projects", []):
-            at._add_project(
-                pd.get("project_name", "Project"), config=pd)
+        from gui.load_progress import report as _report
+        project_defs = data.get("projects", [])
+        for i, pd in enumerate(project_defs):
+            name = pd.get("project_name", "Project")
+            _report(name, i, len(project_defs))
+            at._add_project(name, config=pd)
+        _report("", len(project_defs), len(project_defs))
         # Restore Isotope Shifts tab state
         is_data = data.get("isotope_shifts")
         if is_data:
             is_tab.from_dict(is_data)
+        cal_data = data.get("cooler_calibration")
+        if cal_data:
+            at._sync_cooler_tab()
+            at._cal_tab.from_dict(cal_data)
+        sys_data = data.get("systematics")
+        if sys_data:
+            at._sys_tab.from_dict(sys_data)
         # Repopulate the Results tab with exactly the iterations this
         # save recorded (no whole-output-directory scan — that stays
         # behind the explicit "Refresh All" button).
@@ -565,6 +611,13 @@ class MainWindow(QMainWindow):
             "preanalysis": self._build_preanalysis_dict(),
             "analysis": self._build_analysis_dict(),
         }
+        # Splitter / column positions the user dragged to fit their
+        # screen. Kept out of the tab sections because it is window
+        # state, and omitted entirely when there is nothing to store so
+        # older save files stay byte-comparable.
+        ui = self._build_ui_layout()
+        if ui:
+            d["ui_layout"] = ui
         # Per-file scan filters live alongside the tab sections so a
         # filter set in one tab is visible to the other on reload.
         from gui.scan_filter import get_registry
@@ -596,12 +649,76 @@ class MainWindow(QMainWindow):
             d["nist_asd"] = self._pending_nist_state
         return d
 
+    def _build_ui_layout(self):
+        """Adjustable window geometry (splitter / column positions).
+
+        Stored beside the tab sections rather than inside them: it is
+        window state, not analysis state. Each tab contributes its own
+        dict; a tab that has nothing to say is left out entirely.
+        """
+        out = {}
+        for key, widget in (("estimate", self.estimate_tab),
+                            ("preanalysis", self.preanalysis_tab),
+                            ("analysis_isotope_shifts",
+                             getattr(self.analysis_tab, "_is_tab", None)),
+                            ("analysis_reference_correction",
+                             getattr(self.analysis_tab, "_gp_tab", None)),
+                            ("analysis_cooler_calibration",
+                             getattr(self.analysis_tab, "_cal_tab", None)),
+                            ("analysis_systematics",
+                             getattr(self.analysis_tab, "_sys_tab", None)),
+                            ("results", self.results_tab)):
+            try:
+                d = widget.ui_layout() if widget is not None else None
+            except Exception:
+                d = None
+            if d:
+                out[key] = d
+        return out
+
+    def _restore_ui_layout(self, layout):
+        """Apply a saved layout. Deferred one event-loop tick so the
+        tabs have finished laying out -- setSizes() before the first
+        layout pass is silently overwritten."""
+        if not isinstance(layout, dict) or not layout:
+            return
+
+        def _apply():
+            for key, widget in (("estimate", self.estimate_tab),
+                                ("preanalysis", self.preanalysis_tab),
+                                ("analysis_isotope_shifts",
+                                 getattr(self.analysis_tab, "_is_tab", None)),
+                                ("analysis_reference_correction",
+                                 getattr(self.analysis_tab, "_gp_tab", None)),
+                                ("analysis_cooler_calibration",
+                                 getattr(self.analysis_tab, "_cal_tab",
+                                         None)),
+                                ("analysis_systematics",
+                                 getattr(self.analysis_tab, "_sys_tab",
+                                         None)),
+                                ("results", self.results_tab)):
+                d = layout.get(key)
+                if not d or widget is None:
+                    continue
+                try:
+                    widget.apply_ui_layout(d)
+                except Exception:
+                    pass          # a layout must never block a load
+
+        QTimer.singleShot(0, _apply)
+
     def _state_fingerprint(self):
         """Deterministic hash of the current save-state, or None when
         the state can't be serialized (treated as dirty)."""
         try:
             import hashlib
-            text = yaml.dump(self._build_save_dict(), sort_keys=True,
+            state = dict(self._build_save_dict())
+            # Window geometry is SAVED with the file but must not make
+            # the session look dirty: a plain window resize shifts every
+            # splitter, and prompting "save your changes?" for that
+            # would train the user to dismiss the prompt.
+            state.pop("ui_layout", None)
+            text = yaml.dump(state, sort_keys=True,
                              default_flow_style=True, allow_unicode=True)
             return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
         except Exception:
@@ -619,6 +736,37 @@ class MainWindow(QMainWindow):
         return current != self._saved_fingerprint
 
     # ── Close confirmation ──
+
+    def preload_data_stack(self):
+        """Import pandas (and with it pyarrow) while the process is
+        still small and idle.
+
+        pyarrow loads some 60 MB of native libraries -- arrow.dll
+        alone is 22 MB. Left to the lazy import, that happens deep
+        inside a session restore, after a dozen run files are already
+        in memory, and on Arda's machine it died there with an access
+        violation during the DLL load, taking DENIS with it
+        (2026-09-25; the stack is in his session log, pyarrow/__init__
+        called from _load_file). Here the window is already up and
+        nothing has been read, so a failure costs a log line instead
+        of a half-restored session.
+
+        Deliberately not at import time: the lazy imports are what
+        make the window appear in ~1.4 s. This runs after it does.
+        """
+        import time as _t
+        if "pandas" in sys.modules:
+            return
+        t0 = _t.perf_counter()
+        try:
+            import pyarrow  # noqa: F401  (must win the name arrow.dll)
+            import pandas   # noqa: F401
+        except Exception as exc:                          # noqa: BLE001
+            logging.getLogger("denis").warning(
+                "data stack preload failed: %s", exc)
+            return
+        logging.getLogger("denis").info(
+            "data stack ready in %.1f s", _t.perf_counter() - t0)
 
     def closeEvent(self, event):
         """Prompt to save before closing — but only when something
@@ -1051,9 +1199,64 @@ class MainWindow(QMainWindow):
         if not self._resolve_missing_files(raw, path):
             return
 
+        # Make sure the data stack is in before anything is read: see
+        # the preload in main(). A load started in the first seconds
+        # of a session would otherwise still import pyarrow from the
+        # middle of the Pre-Analysis restore.
+        try:
+            import pandas  # noqa: F401
+        except Exception:                                # noqa: BLE001
+            pass
+
+        # Everything below is synchronous and reads every run named in
+        # the file, which on a campaign-sized save is half a minute of
+        # a window that looks hung. The progress dialog goes up here --
+        # after the prompts above, which a modal window would block.
+        from gui.load_progress import begin as _begin_progress
+        phases = [("registries", "Scan filters and calibrations", 1)]
+        if "estimate" in raw or self._looks_like_estimate(raw):
+            phases.append(("estimate", "Estimate", 2))
+        if "preanalysis" in raw:
+            phases.append(("preanalysis", "Pre-Analysis", 45))
+        if "analysis" in raw:
+            phases.append(("analysis", "Analysis", 45))
+        phases.append(("layout", "Window layout", 2))
+        # Painting is frozen for the duration. The restore tears down
+        # and rebuilds every tab, including three matplotlib canvases
+        # per Pre-Analysis project, and the event loop is pumped
+        # throughout (so Windows does not declare the app dead). That
+        # combination lets a canvas be painted half-built, which is not
+        # something matplotlib or the Agg backend promise to survive.
+        # The progress window is a separate top-level widget and keeps
+        # painting normally.
+        self.setUpdatesEnabled(False)
+        try:
+            with _begin_progress(
+                    self, os.path.basename(path), phases) as _prog:
+                loaded_tabs = self._restore_all(raw, path, _prog)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
+        if not loaded_tabs:
+            self._warn_nothing_loaded()
+
+    def _warn_nothing_loaded(self):
+        """Said after the progress window is down, not underneath it."""
+        QMessageBox.information(
+            self, "Load Config",
+            "No recognized tab data found in this file.\n\n"
+            "Expected keys: 'estimate', 'preanalysis', 'analysis'")
+
+    def _restore_all(self, raw, path, prog):
+        """The body of a load, with the progress window already up.
+
+        Returns the tab names it recognized, so the caller can say so
+        once the window is gone.
+        """
         # Restore the global scan-filter registry BEFORE the tabs
         # rebuild themselves -- file entries created during tab restore
         # may want to read their initial filter state from the registry.
+        prog.phase("registries")
         from gui.scan_filter import get_registry
         get_registry().from_dict(raw.get("scan_filters") or {})
 
@@ -1069,20 +1272,24 @@ class MainWindow(QMainWindow):
 
         # Detect and load Estimate data
         if "estimate" in raw:
+            prog.phase("estimate")
             self._restore_estimate(raw["estimate"])
             loaded_tabs.append("Estimate")
         elif self._looks_like_estimate(raw):
+            prog.phase("estimate")
             # Legacy: top-level estimate format (has "element" key etc.)
             self._restore_estimate(raw)
             loaded_tabs.append("Estimate")
 
         # Detect and load Pre-Analysis data
         if "preanalysis" in raw:
+            prog.phase("preanalysis")
             self._restore_preanalysis(raw["preanalysis"])
             loaded_tabs.append("Pre-Analysis")
 
         # Detect and load Analysis data
         if "analysis" in raw:
+            prog.phase("analysis")
             self._restore_analysis(raw["analysis"])
             loaded_tabs.append("Analysis")
 
@@ -1095,12 +1302,13 @@ class MainWindow(QMainWindow):
                 self._pending_nist_state = raw["nist_asd"]
             loaded_tabs.append("NIST ASD")
 
+        # Splitter / column positions, after every tab has been
+        # rebuilt (the widgets must exist before they can be sized).
+        prog.phase("layout")
+        self._restore_ui_layout(raw.get("ui_layout"))
+
         if not loaded_tabs:
-            QMessageBox.information(
-                self, "Load Config",
-                "No recognized tab data found in this file.\n\n"
-                "Expected keys: 'estimate', 'preanalysis', 'analysis'")
-            return
+            return loaded_tabs
 
         self._config_path = path
         self.setWindowTitle(
@@ -1110,6 +1318,7 @@ class MainWindow(QMainWindow):
         self._mark_saved()
         self.status.show(
             f"Loaded: {', '.join(loaded_tabs)} from {os.path.basename(path)}")
+        return loaded_tabs
 
     def _looks_like_estimate(self, d):
         """Check if a dict looks like a legacy top-level estimate config."""
@@ -1509,6 +1718,18 @@ class MainWindow(QMainWindow):
         self._quick_plot_dialog = QuickPlotDialog(parent=self)
         self._quick_plot_dialog.show()
 
+    def open_asdf_viewer(self, paths=None):
+        """Show this window's ASDF viewer, adding ``paths`` if given."""
+        if self._asdf_viewer is None:
+            from gui.asdf_viewer import AsdfViewer
+            self._asdf_viewer = AsdfViewer(parent=self)
+        if paths:
+            self._asdf_viewer.add_files(paths)
+        self._asdf_viewer.show()
+        self._asdf_viewer.raise_()
+        self._asdf_viewer.activateWindow()
+        return self._asdf_viewer
+
     def _open_nist_browser(self):
         """Show the (single) NIST ASD browser window; on first open,
         apply state parked by a save-file load, else refill from the
@@ -1890,7 +2111,7 @@ class SettingsDialog(QDialog):
 
         from gui.shared_widgets import (
             get_plot_type_tooltip, get_plot_type_sections,
-            get_plot_type_label,
+            get_plot_type_label, get_plot_type_choices,
         )
 
         # code review 2026-06-02, settings-int-spinbox-range-cap-1e6:
@@ -1898,8 +2119,20 @@ class SettingsDialog(QDialog):
         # 1e6 for high-stats data; give those the full int32 range.
         _COUNT_THRESHOLD_KEYS = {"low_count_max", "med_count_max"}
 
-        def _make_widget(default_v, val, tip, key=None):
+        def _make_widget(default_v, val, tip, key=None, choices=None):
             """Build the right kind of widget for a settings entry."""
+            # A setting with a fixed set of values is a drop-down; an
+            # unknown saved value falls back to the default.
+            if choices:
+                w = QComboBox()
+                w.addItems([str(c) for c in choices])
+                idx = w.findText(str(val))
+                if idx < 0:
+                    idx = max(0, w.findText(str(default_v)))
+                w.setCurrentIndex(idx)
+                if tip:
+                    w.setToolTip(tip)
+                return w
             # Order matters: bool is a subclass of int, so check it
             # FIRST or it would silently render as a 1-200 spinbox.
             if isinstance(default_v, bool):
@@ -1966,7 +2199,8 @@ class SettingsDialog(QDialog):
                         default_v = defaults[k]
                         val = user_vals.get(k, default_v)
                         tip = get_plot_type_tooltip(pt_key, k)
-                        w = _make_widget(default_v, val, tip, key=k)
+                        w = _make_widget(default_v, val, tip, key=k,
+                                     choices=get_plot_type_choices(pt_key, k))
                         if w is None:
                             continue
                         nice = get_plot_type_label(pt_key, k)
@@ -1989,7 +2223,8 @@ class SettingsDialog(QDialog):
                         default_v = defaults[k]
                         val = user_vals.get(k, default_v)
                         tip = get_plot_type_tooltip(pt_key, k)
-                        w = _make_widget(default_v, val, tip, key=k)
+                        w = _make_widget(default_v, val, tip, key=k,
+                                     choices=get_plot_type_choices(pt_key, k))
                         if w is None:
                             continue
                         nice = get_plot_type_label(pt_key, k)
@@ -2008,7 +2243,8 @@ class SettingsDialog(QDialog):
                 for k, default_v in defaults.items():
                     val = user_vals.get(k, default_v)
                     tip = get_plot_type_tooltip(pt_key, k)
-                    w = _make_widget(default_v, val, tip, key=k)
+                    w = _make_widget(default_v, val, tip, key=k,
+                                     choices=get_plot_type_choices(pt_key, k))
                     if w is None:
                         continue
                     nice = get_plot_type_label(pt_key, k)
@@ -2083,7 +2319,11 @@ class SettingsDialog(QDialog):
                 dv = defaults.get(k)
                 if dv is None:
                     continue
-                if isinstance(w, QCheckBox):
+                if isinstance(w, QComboBox):
+                    idx = w.findText(str(dv))
+                    if idx >= 0:
+                        w.setCurrentIndex(idx)
+                elif isinstance(w, QCheckBox):
                     w.setChecked(bool(dv))
                 elif isinstance(w, (QDoubleSpinBox, QSpinBox)):
                     w.setValue(dv)
@@ -2146,7 +2386,9 @@ class SettingsDialog(QDialog):
         for pt_key, widgets in self._pt_widgets.items():
             pt_d = {}
             for k, w in widgets.items():
-                if isinstance(w, QCheckBox):
+                if isinstance(w, QComboBox):
+                    pt_d[k] = w.currentText()
+                elif isinstance(w, QCheckBox):
                     pt_d[k] = w.isChecked()
                 elif isinstance(w, QDoubleSpinBox):
                     pt_d[k] = w.value()
@@ -2190,7 +2432,52 @@ class SettingsDialog(QDialog):
 # ══════════════════════════════════════════════════════════════════
 #  Entry Point
 # ══════════════════════════════════════════════════════════════════
+#: Native libraries that DENIS gets from its own virtual environment
+#: and that a second copy of, loaded from somewhere else, breaks.
+#: arrow.dll is the one that cost a day: Anaconda ships its own in
+#: Library\bin, that directory is on the machine PATH, and a DLL base
+#: name is process-global on Windows -- whoever loads it first wins.
+#: With Anaconda's copy in first, `import pyarrow` dies at
+#: pyarrow/__init__.py line 71, which is where Arda's DENIS died every
+#: time he opened a session from the desktop shortcut (2026-09-25).
+SHADOWING_DLLS = ("arrow.dll",)
+
+
+def strip_shadowing_dll_dirs(path_value, keep_under=""):
+    """``(cleaned PATH, dropped entries)``.
+
+    Drops directories that hold one of SHADOWING_DLLS, except any
+    inside ``keep_under`` (our own installation). Pure string work so
+    it can be tested without touching the environment.
+    """
+    kept, dropped = [], []
+    keep_under = os.path.normcase(keep_under or "")
+    for entry in (path_value or "").split(os.pathsep):
+        raw = entry.strip()
+        if not raw:
+            continue
+        here = os.path.normcase(os.path.abspath(raw))
+        if keep_under and here.startswith(keep_under):
+            kept.append(entry)
+            continue
+        try:
+            shadows = any(os.path.isfile(os.path.join(raw, n))
+                          for n in SHADOWING_DLLS)
+        except OSError:
+            shadows = False
+        (dropped if shadows else kept).append(entry)
+    return os.pathsep.join(kept), dropped
+
+
 def main():
+    # Before anything else imports a native library: take the
+    # directories that would shadow ours out of this process's PATH.
+    _app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _clean, _dropped = strip_shadowing_dll_dirs(
+        os.environ.get("PATH", ""), keep_under=_app_dir)
+    if _dropped:
+        os.environ["PATH"] = _clean
+
     # Apply UI scale BEFORE QApplication is created
     _startup_settings = _load_settings()
     ui_scale = _startup_settings.get("ui_scale", 0.0)
@@ -2220,6 +2507,12 @@ def main():
 
     # ── Session header (printed verbatim, like a CLI banner) ──
     import platform as _platform
+    if _dropped:
+        print(f"PATH: dropped {len(_dropped)} director"
+              f"{'y' if len(_dropped) == 1 else 'ies'} holding a second "
+              f"copy of {', '.join(SHADOWING_DLLS)}: "
+              + "; ".join(_dropped))
+
     print("=" * 60)
     print(f"DENIS v{__version__}")
     print("=" * 60)
@@ -2406,6 +2699,8 @@ def main():
             window.showNormal()
             QTimer.singleShot(0, window.showMaximized)
     QTimer.singleShot(0, _settle_maximized_layout)
+
+    QTimer.singleShot(1500, window.preload_data_stack)
 
     sys.exit(app.exec())
 

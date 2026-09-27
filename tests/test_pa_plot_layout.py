@@ -123,5 +123,62 @@ class PlotLayoutTests(unittest.TestCase):
         self.assertEqual(pa3._plot_layout_mode, "stacked")
 
 
+class ToFBinDefaultTests(unittest.TestCase):
+    """0.1 us, not 1 us.
+
+    An ion bunch is a couple of microseconds wide, so 1 us bins drew it
+    as three steps. 0.1 us is also what Arda's own analysis uses
+    (tof_bin_us in the Yb calibration settings), so the two agree
+    without anyone changing a box (2026-09-25).
+    """
+
+    def setUp(self):
+        from gui.preanalysis_tab import PreAnalysisTab
+        self.pa = PreAnalysisTab()
+        self.addCleanup(self.pa.deleteLater)
+
+    def test_a_fresh_project_uses_it(self):
+        from gui.preanalysis_tab import DEFAULT_TOF_BIN_US
+        self.assertEqual(DEFAULT_TOF_BIN_US, 0.1)
+        self.assertAlmostEqual(self.pa._tof_binsize.value(), 0.1)
+
+    def test_a_save_that_predates_the_setting_gets_it(self):
+        self.pa._restore_from_dict(
+            {"files": [], "plot_options": {}, "tof_gate": {}})
+        self.assertAlmostEqual(self.pa._tof_binsize.value(), 0.1)
+
+    def test_a_saved_choice_is_not_overridden(self):
+        self.pa._restore_from_dict(
+            {"files": [], "plot_options": {},
+             "tof_gate": {"binsize": 0.5}})
+        self.assertAlmostEqual(self.pa._tof_binsize.value(), 0.5)
+
+    def test_it_round_trips(self):
+        self.pa._tof_binsize.setValue(0.25)
+        d = self.pa._build_config_dict()["preanalysis"]["tof_gate"]
+        self.assertAlmostEqual(d["binsize"], 0.25)
+
+    def test_the_analysis_plots_agree(self):
+        from gui.analysis.fitting import TOF_BIN_US
+        from gui.preanalysis_tab import DEFAULT_TOF_BIN_US
+        self.assertEqual(TOF_BIN_US, DEFAULT_TOF_BIN_US)
+
+    def test_the_analysis_histogram_really_uses_it(self):
+        import numpy as np
+        import pandas as pd
+        from gui.analysis.fitting import _compute_tof_hist, TOF_BIN_US
+
+        class _Data:
+            Sorted = pd.DataFrame({
+                "TOF": np.linspace(60.0, 80.0, 500),
+                "TDC": [3] * 500,
+            })
+
+        hist = _compute_tof_hist(_Data(), [3])
+        centers = hist["centers"]
+        step = centers[1] - centers[0]
+        self.assertAlmostEqual(step, TOF_BIN_US, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

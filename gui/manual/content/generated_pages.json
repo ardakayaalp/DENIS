@@ -10,7 +10,7 @@
   },
   {
    "type": "p",
-   "text": "The window title starts as <code>DENIS v1.0.0</code>. After a <b>Save</b>, <b>Save As...</b>, or <b>Load All...</b> it gains the file name, e.g. <code>DENIS v1.0.0 - my_run.yaml</code>, so you can always see which configuration is in play. The icon is the bundled <code>denis.ico</code>, falling back to a generic atom glyph if that file is missing."
+   "text": "The window title starts as <code>DENIS v1.1.0</code>. After a <b>Save</b>, <b>Save As...</b>, or <b>Load All...</b> it gains the file name, e.g. <code>DENIS v1.1.0 - my_run.yaml</code>, so you can always see which configuration is in play. The icon is the bundled <code>denis.ico</code>, falling back to a generic atom glyph if that file is missing."
   },
   {
    "type": "h2",
@@ -562,7 +562,7 @@
   {
    "type": "ul",
    "items": [
-    "The DENIS logo and version, <code>DENIS v1.0.0</code>.",
+    "The DENIS logo and version, <code>DENIS v1.1.0</code>.",
     "The name expansion: <b>D</b>oppler <b>E</b>stimation and <b>N</b>umerical <b>I</b>nference for <b>S</b>pectroscopy.",
     "A one-line scope summary: estimation, pre-analysis, fitting, and results.",
     "Hyperlinked credits: <b>satlas2</b> (fitting and spectrum estimation) and <b>cls_tools</b> (IGISOL-style ASDF file reading).",
@@ -3297,6 +3297,10 @@
    "text": "Method & Statistics"
   },
   {
+   "type": "tip",
+   "text": "The square <b>?</b> button beside <b>Method</b> opens a practical guide to these choices: which minimiser and statistics to use when, where each one's error bars come from, and how to set up emcee. It stays open while you change the combos."
+  },
+  {
    "type": "table",
    "headers": [
     "Control",
@@ -3307,7 +3311,7 @@
     [
      "Method",
      "leastsq, least_squares, slsqp, emcee, nelder, powell, cobyla",
-     "leastsq is the fast Levenberg–Marquardt default; emcee samples an MCMC posterior"
+     "leastsq is the fast Levenberg-Marquardt default; emcee samples an MCMC posterior. Under a likelihood use nelder, powell or emcee"
     ],
     [
      "Statistics",
@@ -3316,10 +3320,14 @@
     ],
     [
      "Scale covariance",
-     "checkbox, on by default",
+     "checkbox, off by default",
      "scales uncertainties by √(reduced χ²); forced off for likelihood fits"
     ]
    ]
+  },
+  {
+   "type": "warning",
+   "text": "A likelihood needs a <b>scalar</b> minimiser. <code>leastsq</code> and <code>least_squares</code> fit a residual vector, so they cannot minimise one: picked together with <b>Poisson LLH</b> or <b>Gaussian LLH</b>, satlas2 would silently run SLSQP, which on a hyperfine spectrum can diverge to a nonsense centroid while still reporting success. DENIS substitutes <code>nelder</code> instead, warns under <b>Statistics</b> before the fit and prints a <code>[Minimiser]</code> line at the top of the fit report. Pick <code>nelder</code>, <code>powell</code> or <code>emcee</code> yourself to choose. Their error bars are estimated numerically by lmfit as 2 &times; the inverse curvature at the minimum: right for Chi-square, but under a likelihood &radic;2 (41 %) too large, because the factor 2 assumes a &chi;&sup2; while satlas2 minimises &minus;ln L. The Fitter block warns about this, and <b>Correct likelihood error bars (&divide;&radic;2)</b> &mdash; off by default, shown only when it applies &mdash; divides them by &radic;2; the report states which was done. <code>emcee</code> is not affected."
   },
   {
    "type": "equation",
@@ -3357,8 +3365,12 @@
     "<b>Parameter Sharing</b> (simultaneous) — tick a bare parameter (e.g. <i>Al</i>) and choose <i>Model</i> (share across same-named models) or <i>All</i> (share across every source).",
     "<b>Advanced Constraints</b> (simultaneous) — full-name expressions on individual cross-run/cross-model targets; see [[an-expressions]].",
     "<b>Show Priors</b> → <b>Gaussian Priors</b> table — each prior adds a penalty term.",
-    "<b>MCMC settings</b> (Method = emcee) — walkers, steps, burn/thin, and optional auto-convergence on autocorrelation time."
+    "<b>MCMC settings</b> (Method = emcee) &mdash; walkers, steps, burn/thin, and optional auto-convergence on autocorrelation time. <b>Burn-in</b> discards the first steps of every walker: they start in a tight ball at the Model block's values and need a while to reach the posterior, and keeping those steps widens the error bars (10&ndash;40 % on a Yb spectrum). Set it where the traces in the walk plot have settled &mdash; the plot marks it with a dashed line. The values, errors, correlations, corner plot, confidence band and plotted fit all use the steps after it."
    ]
+  },
+  {
+   "type": "note",
+   "text": "An emcee fit, and any Poisson/Gaussian LLH fit, reports its fit statistics (data points, chi-square, reduced chi-square, AIC, BIC) recomputed from the residuals of the plotted curve; the report says so in its Fit Statistics block. The sampler's own numbers are not a chi-square &mdash; before 2026-09-25 an emcee fit showed \"# data points = 1\" and a reduced chi-square in the hundreds of thousands."
   },
   {
    "type": "equation",
@@ -3465,7 +3477,7 @@
    "type": "ul",
    "items": [
     "<b>Tracker Plots (Separate mode)</b> — plot selected parameters vs <i>Run number</i> or <i>Start time</i>. Only meaningful for multi-run separate fits.",
-    "<b>Diagnostics</b> — <b>Chi-square map</b> (any method), <b>Correlation plot</b> and <b>Walk plot</b> (emcee only), and <b>Confidence bands</b> (emcee, with a <b>Samples</b> count, default 200).",
+    "<b>Diagnostics</b> &mdash; <b>Chi-square map</b> (any method), <b>Correlation plot</b> and <b>Walk plot</b> (emcee only), and <b>Confidence bands</b> (emcee, with a <b>Samples</b> count, default 200). The walk plot shows every step with the burn-in cut as a dashed line; the correlation plot is a corner plot of the samples after that cut &mdash; filled 2-D credible regions at 0.5, 1, 1.5 and 2&sigma; (11.8, 39.3, 67.5 and 86.5 % of the samples), step histograms with the 16/50/84 % lines, and each parameter's value in its title. Style, colour scale and font are in <b>Settings &rarr; Correlation</b>; the earlier scatter rendering is still there as Style = Scatter.",
     "<b>Iteration</b> — <b>Auto</b> increments <code>iter_001</code>, <code>iter_002</code>, …; <b>Manual</b> uses a custom <b>Label</b>."
    ]
   },
@@ -3973,7 +3985,7 @@
   },
   {
    "type": "warning",
-   "text": "The GP needs PyMC. Without a C compiler on PATH, PyTensor falls back to a pure-Python path that is 10–100&times; slower; the panel shows a one-line hint telling you how to install a compiler. A fit typically takes 20–90 s."
+   "text": "The GP needs PyMC. Without a C compiler on PATH, PyTensor (PyMC&rsquo;s maths backend) cannot compile the model to C and falls back to pure Python: <b>the result is identical</b>, it is only 10&ndash;100&times; slower, so a fit that takes 20&ndash;90 s can take minutes. The panel&rsquo;s one-line hint says how to install a compiler (MSVC Build Tools on Windows, or <code>conda install m2w64-toolchain</code>); ignoring it costs nothing but time."
   },
   {
    "type": "h2",
@@ -3981,11 +3993,15 @@
   },
   {
    "type": "p",
-   "text": "Tick the sample projects under <b>Apply to sample projects</b> and click <b>Compute per-file corrections</b>. The table fills one row per successful run: <b>Project</b>, <b>Run</b>, <b>t (h)</b> (hours since the first run), <b>Mode</b>, <b>&mu; (MHz)</b>, <b>&sigma; (MHz)</b>, and <b>|&mu;|/&sigma;</b>. The <b>Mode</b> combo per row is <b>Auto</b> (use &mu;_GP), <b>Manual</b> (type your own &mu; and &sigma;, e.g. a published value), or <b>Off</b> (skip that run). Rows are tinted amber above 2&sigma; and red above 3&sigma; of |&mu;|/&sigma;; Off rows are greyed."
+   "text": "Tick the sample projects under <b>Apply to sample projects</b> and click <b>Compute per-file corrections</b>. The table fills one row per run of those projects &mdash; including runs that have not been fitted, since a correction only needs the run&rsquo;s start timestamp: <b>Project</b>, <b>Run</b>, <b>t (h)</b> (hours since the first run), <b>Mode</b>, <b>&mu; (MHz)</b>, <b>&sigma; (MHz)</b>, and <b>|&mu;|/&sigma;</b>. The <b>Mode</b> combo per row is <b>Auto</b> (use &mu;_GP), <b>Manual</b> (type your own &mu; and &sigma;, e.g. a published value), or <b>Off</b> (skip that run). Rows are tinted amber above 2&sigma; and red above 3&sigma; of |&mu;|/&sigma;; Off rows are greyed."
   },
   {
    "type": "p",
    "text": "The <b>Apply correction at fit time</b> checkbox (default on) is a global gate: when off, the merge and fit pipelines ignore every per-file correction regardless of mode. The propagated correction uncertainty feeds the &sigma;_corr columns of the shift table."
+  },
+  {
+   "type": "p",
+   "text": "<b>Merging corrected runs.</b> The [[an-merge-dialog|merge dialog]]&rsquo;s <b>Align centroids before merging</b> box is enabled only once this table holds a row for the files going into the merge; it shifts each file onto the drift-free frame <i>before</i> they are histogrammed together, so the drift cannot smear the merged peak. The order is therefore: fit the GP, compute the corrections, then merge. A merged entry never gets a row of its own &mdash; it inherits the corrections of its constituents, whose weighted mean and propagated &sigma; are recorded in its fit metadata."
   },
   {
    "type": "equation",
@@ -4462,11 +4478,11 @@
     ],
     [
      "walk",
-     "MCMC walker traces"
+     "MCMC walker traces, burn-in cut as a dashed line"
     ],
     [
      "correl",
-     "Parameter correlation matrix"
+     "Corner plot of the posterior after burn-in: 2-D credible regions and 1-D histograms (or Style = Scatter)"
     ],
     [
      "chisq",
@@ -7181,7 +7197,7 @@
   },
   {
    "type": "code",
-   "code": "============================================================\nDENIS v1.0.0\n============================================================\nPython:     3.x.y\nPlatform:   Windows 11 (AMD64)\nOS:         <platform string>\nApp dir:    <path to app>\nLog file:   <path>\\logs\\denis_...log\nPySide6     <version>\nmatplotlib  <version>\nnumpy       <version>\nsatlas2     <version>\nclstools    <version>\n------------------------------------------------------------",
+   "code": "============================================================\nDENIS v1.1.0\n============================================================\nPython:     3.x.y\nPlatform:   Windows 11 (AMD64)\nOS:         <platform string>\nApp dir:    <path to app>\nLog file:   <path>\\logs\\denis_...log\nPySide6     <version>\nmatplotlib  <version>\nnumpy       <version>\nsatlas2     <version>\nclstools    <version>\n------------------------------------------------------------",
    "caption": "Startup banner; any dependency that fails to import prints NOT FOUND instead of a version.",
    "lang": "text"
   },
@@ -7253,7 +7269,7 @@
   },
   {
    "type": "p",
-   "text": "DENIS v1.0.0 is developed by Arda Kayaalp. For questions, bug reports, or citation guidance, email <code>arda.kayaalp@kuleuven.be</code>."
+   "text": "DENIS v1.1.0 is developed by Arda Kayaalp. For questions, bug reports, or citation guidance, email <code>arda.kayaalp@kuleuven.be</code>."
   },
   {
    "type": "h2",
@@ -7365,6 +7381,110 @@
     "save-yaml-format",
     "est-laser",
     "menu-bar"
+   ]
+  }
+ ],
+ "tool-asdf-viewer": [
+  {
+   "type": "p",
+   "text": "<b>Tools &rarr; ASDF Viewer&hellip;</b> shows what is actually in a run file, as stored &mdash; for checking a header or the events behind a strange spectrum without writing a script. It is a non-modal window; files opened from anywhere in the same DENIS window collect in it."
+  },
+  {
+   "type": "h2",
+   "text": "Getting files in"
+  },
+  {
+   "type": "ul",
+   "items": [
+    "Drop <code>.asdf</code> or <code>.vasdf</code> files on the window, or use <b>Open&hellip;</b>.",
+    "Right-click a run in the Pre-Analysis file list, or a file row in an Analysis Source block, and choose <b>View ASDF&hellip;</b>: the viewer opens with that run selected. A merged spectrum has no file behind it, so the entry is disabled there.",
+    "A <code>.vasdf</code> split opens its parent run, unsplit; the path line says which split it came from.",
+    "<b>Remove</b> and <b>Clear</b> empty the list. A file that cannot be read stays listed with &#9888; and the reason."
+   ]
+  },
+  {
+   "type": "note",
+   "text": "Files load in the background: the list fills in at once (&#9203; while a file loads) and the window stays usable. From 30 files or 300&nbsp;MB on, they load on up to 8 worker processes (fewer if <b>Settings &rarr; Max cores</b> is lower): 412 runs took 1.7&ndash;4.4&nbsp;s that way against 8.1&nbsp;s one by one."
+  },
+  {
+   "type": "h2",
+   "text": "Header"
+  },
+  {
+   "type": "p",
+   "text": "Every top-level entry that is not an array (Run, Date, CoolerVoltage, LaserSetpoint, MassAMU, ScanningRanges, <code>raw_header</code>, &hellip;) with its type. Values are shown exactly as stored; the Note column says where DENIS reads one differently &mdash; <code>CoolerVoltage</code> is stored divided by 10&nbsp;000, so 2.99128455 is 29&nbsp;912.85&nbsp;V."
+  },
+  {
+   "type": "h2",
+   "text": "Tables"
+  },
+  {
+   "type": "ul",
+   "items": [
+    "<b>raw</b> &mdash; the event table, one row per detected event, columns named from <code>raw_header</code> (timestamp, voltage, bunch_number, channel, time, cooler). Rows are read on demand, so 100&nbsp;000+ events scroll smoothly.",
+    "1-D arrays of the same length side by side, e.g. <b>CalReadback + CalSet</b>, the voltage calibration points.",
+    "Below the table: per column min, max, mean and the distinct values when there are few &mdash; which PMT channels fired, the ToF range of <code>time</code>, the scanned voltage range.",
+    "Right-click the table: <b>Copy selection</b> (tab-separated, pastes into a spreadsheet) or <b>Export table as CSV&hellip;</b>."
+   ]
+  },
+  {
+   "type": "table",
+   "headers": [
+    "Column",
+    "What it is",
+    "Unit"
+   ],
+   "rows": [
+    [
+     "timestamp",
+     "Event time (Unix timestamp); hover a cell for the date and time",
+     "s since 1970-01-01 UTC"
+    ],
+    [
+     "voltage",
+     "Scan-voltage setpoint of the step (as CalSet); the applied voltage is the calibration fit &times; 1000",
+     "V"
+    ],
+    [
+     "bunch_number",
+     "Ion bunch index, counted over the whole run; scan = bunch_number // (steps per scan &times; BunchesPerChannel)",
+     "&mdash;"
+    ],
+    [
+     "channel",
+     "PMT (TDC) channel that saw the photon",
+     "&mdash;"
+    ],
+    [
+     "time",
+     "Time of flight from bunch release to detection",
+     "&micro;s"
+    ],
+    [
+     "cooler",
+     "Cooler platform voltage monitor; hover a cell for volts",
+     "V / 10&nbsp;000"
+    ]
+   ]
+  },
+  {
+   "type": "tip",
+   "text": "Hover a column header, or a key in the Header tab, for what it is, its unit and how DENIS uses it; hover a timestamp or cooler cell for its converted reading."
+  },
+  {
+   "type": "h2",
+   "text": "Tree"
+  },
+  {
+   "type": "p",
+   "text": "The whole ASDF tree, including the <code>asdf_library</code> and <code>history</code> entries the file format adds; arrays are summarised by shape and type."
+  },
+  {
+   "type": "related",
+   "ids": [
+    "pa-loading-files",
+    "an-source-block",
+    "tools"
    ]
   }
  ]

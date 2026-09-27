@@ -393,6 +393,14 @@ class _NoScrollInt(QSpinBox):
             e.ignore()
 
 
+#: ToF histogram bin, in microseconds. 0.1 us resolves the bunch
+#: shape -- the width of an ion bunch is a couple of microseconds, and
+#: the 1 us bins this used to default to turned it into three steps.
+#: It is also what Arda's own analysis uses (tof_bin_us in the Yb
+#: calibration settings), so the two agree by default (2026-09-25).
+DEFAULT_TOF_BIN_US = 0.1
+
+
 def _make_double(value=0.0, min_val=-1e12, max_val=1e12, decimals=6,
                  step=1.0, suffix="", tooltip=""):
     sb = _NoScrollDouble()
@@ -406,6 +414,19 @@ def _make_double(value=0.0, min_val=-1e12, max_val=1e12, decimals=6,
     if tooltip:
         sb.setToolTip(tooltip)
     return sb
+
+
+def _settle_on_edit(*spins):
+    """Emit valueChanged when the typing STOPS, not on every digit.
+
+    With keyboard tracking on (Qt's default) typing "70" into the mass
+    number emits 7 and then 70, and each one triggers a replot. On the
+    inputs that move the frequency axis that is a second of blocked
+    GUI per keystroke. Stepping with the arrows or the wheel still
+    emits immediately -- that is a finished value.
+    """
+    for sb in spins:
+        sb.setKeyboardTracking(False)
 
 
 def _make_int(value=0, min_val=0, max_val=999, tooltip=""):
@@ -631,6 +652,24 @@ class FileEntry(QWidget):
             parent=self)
         outer.addWidget(self.cal_alert)
 
+        # Yellow "c" when this file's calibration has been EDITED (an
+        # override is in force). Distinct from the blinking "!", which
+        # only flags that the file's own points look suspect: this says
+        # "you changed it". Foreground-only -- _STYLE_SELECTED repaints
+        # the background of every descendant, so a coloured badge would
+        # fight the selected-row stylesheet.
+        self.cal_edited_badge = QLabel("c")
+        self.cal_edited_badge.setStyleSheet(
+            "color: #ffd54f; font-weight: bold; padding: 0 4px;")
+        self.cal_edited_badge.hide()
+        outer.addWidget(self.cal_edited_badge)
+        self.refresh_cal_edited_badge()
+        # Self-subscribe like CalibrationAlertBadge does: Qt drops the
+        # connection when the row widget is destroyed.
+        from gui.calibration import get_registry as _get_cal_reg
+        _get_cal_reg().calibrations_changed.connect(
+            self.refresh_cal_edited_badge)
+
         # code review 2026-06-02, file-mass-tooltip-misleading-zero: show
         # "(not in file)" when the ASDF had no MassAMU (mass_amu is None)
         # rather than a misleading "0.0000 amu" that looks like a value.
@@ -753,6 +792,20 @@ class FileEntry(QWidget):
                 "Triage every loaded run's calibration at once, worst first.")
             overview_action.triggered.connect(self._open_calibration_overview)
 
+            # The raw file behind this entry (a split opens its .vasdf,
+            # which the viewer resolves to the parent run).
+            menu.addSeparator()
+            view_action = menu.addAction("View ASDF\u2026")
+            view_action.setToolTip(
+                "Open this run in Tools \u25b8 ASDF Viewer: the header, "
+                "the event table and the whole file tree, as stored.")
+
+            def _view_asdf():
+                from gui.asdf_viewer import open_in_viewer
+                open_in_viewer([self.filepath], anchor=self)
+
+            view_action.triggered.connect(_view_asdf)
+
         menu.exec(event.globalPos())
 
     # ── Voltage calibration ──
@@ -760,6 +813,36 @@ class FileEntry(QWidget):
     def _cal_path(self):
         """A split shares its parent ASDF's calibration table."""
         return getattr(self, "parent_path", None) or self.filepath
+
+    def refresh_cal_edited_badge(self):
+        """Show/hide the yellow "c" from the calibration registry."""
+        badge = getattr(self, "cal_edited_badge", None)
+        if badge is None:
+            return
+        if getattr(self, "_is_merged", False):
+            badge.hide()          # a merge has no calibration of its own
+            return
+        try:
+            from gui.calibration import get_registry, describe_spec
+            reg = get_registry()
+            path = self._cal_path()
+            spec = reg.get(path)
+        except Exception:
+            badge.hide()
+            return
+        if not spec:
+            badge.hide()
+            return
+        try:
+            detail = describe_spec(spec)
+        except Exception:
+            detail = ""
+        badge.setToolTip(
+            "Calibration edited for this run"
+            + (": " + detail if detail else "")
+            + "  --  right-click the row and choose Calibration... "
+              "to review or reset it.")
+        badge.show()
 
     def _open_calibration_dialog(self):
         from gui.calibration_dialog import CalibrationDialog
@@ -1503,7 +1586,11 @@ class HFSModelPanel(QGroupBox):
         self._linestyle_combo = QComboBox()
         self._linestyle_combo.addItems(
             ["Solid", "Dashed", "Dotted", "Dash-dot"])
-        self._linestyle_combo.setFixedWidth(70)
+        # Sized to its longest entry in the font in use. A fixed 70 px
+        # clipped "Solid" to "Solic" in the Win98 theme at zoom 1
+        # (2026-09-22), and a fixed width cannot follow a zoom change.
+        self._linestyle_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._linestyle_combo.currentIndexChanged.connect(
             lambda: self.params_changed.emit())
         top_row.addWidget(self._linestyle_combo)
@@ -1511,11 +1598,14 @@ class HFSModelPanel(QGroupBox):
         self._alpha_slider.setRange(0, 100)
         self._alpha_slider.setValue(100)
         self._alpha_slider.setToolTip("Transparency")
-        self._alpha_slider.setFixedWidth(50)
+        # Same shape as the parameter sliders below it: it takes the
+        # row's slack and stops where they stop, short of the column
+        # their 20 px "..." buttons occupy. It was a fixed 50 px stub.
+        self._alpha_slider.setFixedHeight(18)
         self._alpha_slider.valueChanged.connect(
             lambda: self.params_changed.emit())
-        top_row.addWidget(self._alpha_slider)
-        top_row.addStretch()
+        top_row.addWidget(self._alpha_slider, 1)
+        top_row.addSpacing(20 + top_row.spacing())
         layout.addLayout(top_row)
 
         # Nuclear parameters — all three on ONE compact row (the old
@@ -1566,10 +1656,23 @@ class HFSModelPanel(QGroupBox):
             ("Bu", "Bu", 0.0, -500.0, 500.0),
             ("centroid", "Centroid", 0.0, -50000.0, 50000.0),
             ("scale", "Scale", 100.0, 0.0, 10000.0),
-            ("bkg", "Bkg", 0.0, 0.0, 100.0),
+            ("bkg", "Bkg p0", 0.0, 0.0, 100.0),
+            ("bkg_p1", "Bkg p1", 0.0, -1.0, 1.0),
+            ("bkg_p2", "Bkg p2", 0.0, -1e-3, 1e-3),
             ("fwhm_g", "FWHM_G", 50.0, 1.0, 500.0),
             ("fwhm_l", "FWHM_L", 50.0, 1.0, 500.0),
         ]
+
+        # One column width for every parameter row, measured from
+        # the widest label at the CURRENT font rather than hardcoded:
+        # a fixed 65 px was picked for 9 pt and clipped as soon as the
+        # user zoomed in or a label grew (2026-09-20).
+        from PySide6.QtGui import QFontMetrics
+        _fm = QFontMetrics(self.font())
+        _label_w = max(
+            65,
+            max(_fm.horizontalAdvance(t)
+                for t in ([p[1] for p in params_info] + ["Bkg model"])) + 6)
 
         for key, label, default, lo, hi in params_info:
             self._ordered_keys.append(key)
@@ -1578,12 +1681,20 @@ class HFSModelPanel(QGroupBox):
             row.setSpacing(4)
 
             lbl = QLabel(label)
-            lbl.setFixedWidth(65)
+            lbl.setFixedWidth(_label_w)
             lbl.setAlignment(Qt.AlignmentFlag.AlignRight
                              | Qt.AlignmentFlag.AlignVCenter)
             row.addWidget(lbl)
 
-            val_spin = _make_hfs_spin(default, -1e8, 1e8, 2, 1.0,
+            # A background slope is ~0.02 counts/MHz and a
+            # curvature ~1e-5; at the 2 decimals that suit a centroid
+            # they round to nothing. Step down to match.
+            _dec, _step = (2, 1.0)
+            if key == "bkg_p1":
+                _dec, _step = 6, 0.001
+            elif key == "bkg_p2":
+                _dec, _step = 9, 1e-6
+            val_spin = _make_hfs_spin(default, -1e8, 1e8, _dec, _step,
                                       tooltip=f"{key}")
             val_spin.setFixedWidth(95)
             row.addWidget(val_spin)
@@ -1602,12 +1713,44 @@ class HFSModelPanel(QGroupBox):
 
             layout.addLayout(row)
 
+            # Background-shape selector, immediately above its own
+            # coefficient rows so the group reads as one control.
+            if key == "scale":
+                bkg_row = QHBoxLayout()
+                bkg_row.setContentsMargins(0, 0, 0, 0)
+                bkg_row.setSpacing(4)
+                # "Background" is 70 px in the retro font and the
+                # parameter-label column is 65, so it rendered as
+                # "ckground".
+                bkg_lbl = QLabel("Bkg model")
+                bkg_lbl.setFixedWidth(_label_w)
+                bkg_lbl.setAlignment(Qt.AlignmentFlag.AlignRight
+                                     | Qt.AlignmentFlag.AlignVCenter)
+                bkg_row.addWidget(bkg_lbl)
+                self._bkg_combo = QComboBox()
+                for _t, _o in (("Constant", 0), ("Linear", 1),
+                               ("Quadratic", 2)):
+                    self._bkg_combo.addItem(_t, userData=_o)
+                self._bkg_combo.setToolTip(
+                    "Shape of the trial model's background:\n"
+                    "  Constant   p0\n"
+                    "  Linear     p0 + p1\u00b7x\n"
+                    "  Quadratic  p0 + p1\u00b7x + p2\u00b7x\u00b2\n\n"
+                    "x is the plotted frequency in MHz. The extra\n"
+                    "coefficients travel to the Analysis tab through\n"
+                    "Import from Pre-Analysis, so a sloping baseline\n"
+                    "no longer needs a hand-built second model block.")
+                self._bkg_combo.currentIndexChanged.connect(
+                    self._on_bkg_order_changed)
+                bkg_row.addWidget(self._bkg_combo, 1)
+                layout.addLayout(bkg_row)
+
             # Insert ratio row after Au / Bu
             if key == "Au":
                 a_ratio_row = QHBoxLayout()
                 a_ratio_row.setContentsMargins(0, 0, 0, 0)
                 a_ratio_row.setSpacing(4)
-                a_ratio_row.addSpacing(69)  # label width + spacing
+                a_ratio_row.addSpacing(_label_w + 4)
                 a_ratio_row.addWidget(self._fix_a_ratio)
                 a_ratio_row.addWidget(self._a_ratio)
                 a_ratio_row.addStretch()
@@ -1616,7 +1759,7 @@ class HFSModelPanel(QGroupBox):
                 b_ratio_row = QHBoxLayout()
                 b_ratio_row.setContentsMargins(0, 0, 0, 0)
                 b_ratio_row.setSpacing(4)
-                b_ratio_row.addSpacing(69)
+                b_ratio_row.addSpacing(_label_w + 4)
                 b_ratio_row.addWidget(self._fix_b_ratio)
                 b_ratio_row.addWidget(self._b_ratio)
                 b_ratio_row.addStretch()
@@ -1626,6 +1769,9 @@ class HFSModelPanel(QGroupBox):
             self._slider_params[key] = {
                 "_lo": lo, "_hi": hi,
                 "slider": slider, "value": val_spin,
+                # The whole row, so the background coefficients above
+                # the chosen order can be hidden as a unit.
+                "widgets": (lbl, val_spin, slider, lim_btn),
             }
 
             slider.valueChanged.connect(
@@ -1683,6 +1829,10 @@ class HFSModelPanel(QGroupBox):
         for key in self._slider_params:
             self._on_value_changed(key)
         self._building = True
+        # Hide the background coefficients above the default order:
+        # the rows are built once and shown/hidden rather than
+        # rebuilt, so this first pass has to run explicitly.
+        self._on_bkg_order_changed()
         self._building = False
 
     # -- Name / color --
@@ -2006,6 +2156,27 @@ class HFSModelPanel(QGroupBox):
     def set_value(self, key, val):
         self._slider_params[key]["value"].setValue(val)
 
+    def bkg_order(self) -> int:
+        """Polynomial order of the trial background (0 = constant)."""
+        d = self._bkg_combo.currentData()
+        return int(d) if d is not None else 0
+
+    def bkg_coefficients(self) -> list:
+        """``[p0, p1, ...]`` up to the selected order, lowest first."""
+        keys = ("bkg", "bkg_p1", "bkg_p2")
+        return [self.get_value(k)
+                for k in keys[:self.bkg_order() + 1]]
+
+    def _on_bkg_order_changed(self, *_):
+        """Show only the coefficient rows the chosen shape uses."""
+        order = self.bkg_order()
+        for n, key in enumerate(("bkg", "bkg_p1", "bkg_p2")):
+            visible = n <= order
+            for w in self._slider_params[key].get("widgets", ()):
+                w.setVisible(visible)
+        if not self._building:
+            self.params_changed.emit()
+
     def get_model_params(self):
         return {
             "I": self.spin_I.value(),
@@ -2018,6 +2189,9 @@ class HFSModelPanel(QGroupBox):
             "centroid": self.get_value("centroid"),
             "scale": self.get_value("scale"),
             "bkg": self.get_value("bkg"),
+            "bkg_p1": self.get_value("bkg_p1"),
+            "bkg_p2": self.get_value("bkg_p2"),
+            "bkg_order": self.bkg_order(),
             "fwhm_g": self.get_value("fwhm_g"),
             "fwhm_l": self.get_value("fwhm_l"),
         }
@@ -2107,6 +2281,14 @@ class HFSModelPanel(QGroupBox):
         for key in self._slider_params:
             if key in d:
                 self.set_value(key, float(d[key]))
+
+        # After the values, so the rows exist to be hidden. Absent in
+        # a pre-2026-09-20 save, which means Constant -- exactly the
+        # single flat Bkg slider those saves had.
+        b_idx = self._bkg_combo.findData(int(d.get("bkg_order", 0) or 0))
+        if b_idx >= 0:
+            self._bkg_combo.setCurrentIndex(b_idx)
+        self._on_bkg_order_changed()
 
         self._building = False
         self._building = False
@@ -2231,6 +2413,14 @@ class PreAnalysisTab(QWidget):
         # full replot always wins over a light one in the same debounce
         # window. First draw is full.
         self._pending_spectrum_only = False
+        # A third case: the FREQUENCY AXIS moved (mass, Z/A, harmonic,
+        # energy levels). The spectrum has to be recomputed from the
+        # raw events, but the TOF and timestamp histograms and the six
+        # calibration / cooler axes cannot have changed -- they live in
+        # the voltage domain, upstream of the Doppler conversion. Not
+        # the gate-drag fast path either: that one blits a cached line
+        # whose x-data is still valid, and here x is what changed.
+        self._pending_spectrum_recompute = False
 
         # ── Gate-drag fast path ──────────────────────────────────────
         # To keep gate dragging instant, a full replot caches the
@@ -2262,6 +2452,13 @@ class PreAnalysisTab(QWidget):
         from gui.calibration import get_registry as _get_cal_registry
         _get_cal_registry().calibrations_changed.connect(
             self._on_calibrations_changed)
+        # _on_calibrations_changed early-returns when no LOADED entry's
+        # fingerprint moved (acknowledge / project-load emissions), so it
+        # cannot be the only redraw trigger for the Calibrations sub-tab.
+        # _schedule_replot is debounced, which also defers past __init__
+        # -- the axes below do not exist yet at this point.
+        _get_cal_registry().calibrations_changed.connect(
+            self._schedule_replot)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(4, 4, 4, 4)
@@ -2269,6 +2466,11 @@ class PreAnalysisTab(QWidget):
         # Main 3-panel horizontal splitter
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self._main_splitter = splitter
+        # The width the left column is MEANT to have: set by a user
+        # drag or by a restored layout, and re-applied by
+        # _fit_main_splitter whenever the tab is wide enough for it.
+        self._desired_left_width = 0
+        splitter.splitterMoved.connect(self._on_main_splitter_moved)
 
         # ── Left panel: file list + plot options ─────────────────
         left = QWidget()
@@ -2359,13 +2561,13 @@ class PreAnalysisTab(QWidget):
         self._e_lower = _make_double(0, -1e6, 1e6, 4, 0.001,
                                       tooltip="Lower energy level [cm\u207b\u00b9]")
         self._e_lower.valueChanged.connect(self._update_transition_labels)
-        self._e_lower.valueChanged.connect(self._schedule_replot)
+        self._e_lower.valueChanged.connect(self._schedule_replot_spectrum)
         opts_form.addRow("E lower (cm\u207b\u00b9):", self._e_lower)
 
         self._e_upper = _make_double(0, -1e6, 1e6, 4, 0.001,
                                       tooltip="Upper energy level [cm\u207b\u00b9]")
         self._e_upper.valueChanged.connect(self._update_transition_labels)
-        self._e_upper.valueChanged.connect(self._schedule_replot)
+        self._e_upper.valueChanged.connect(self._schedule_replot_spectrum)
         opts_form.addRow("E upper (cm\u207b\u00b9):", self._e_upper)
 
         self._transition_label = QLabel("0.0000 cm\u207b\u00b9")
@@ -2376,8 +2578,9 @@ class PreAnalysisTab(QWidget):
         opts_form.addRow("Transition:", self._transition_label)
 
         self._harmonic = _make_int(2, 1, 10, tooltip="Laser harmonic")
+        _settle_on_edit(self._e_lower, self._e_upper, self._harmonic)
         self._harmonic.valueChanged.connect(self._update_transition_labels)
-        self._harmonic.valueChanged.connect(self._schedule_replot)
+        self._harmonic.valueChanged.connect(self._schedule_replot_spectrum)
         opts_form.addRow("Harmonic:", self._harmonic)
 
         self._fundamental_label = QLabel("0.0000 cm\u207b\u00b9")
@@ -2399,6 +2602,7 @@ class PreAnalysisTab(QWidget):
         za_layout.addWidget(self._z_spin)
         za_layout.addWidget(QLabel("A:"))
         self._a_spin = _make_int(1, 1, 300, tooltip="Mass number")
+        _settle_on_edit(self._z_spin, self._a_spin)
         self._a_spin.setMinimumWidth(55)
         self._a_spin.valueChanged.connect(self._on_a_changed)
         za_layout.addWidget(self._a_spin)
@@ -2419,6 +2623,7 @@ class PreAnalysisTab(QWidget):
                     "Auto-filled from the periodictable database when "
                     "Z and A change. Tick 'Override' to use a custom "
                     "value (e.g. AME2020 mass not in the database).")
+        _settle_on_edit(self._mass_spin)
         self._mass_spin.setMinimumWidth(110)
         self._mass_spin.setReadOnly(True)
         self._mass_spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
@@ -2426,7 +2631,7 @@ class PreAnalysisTab(QWidget):
         self._mass_override.setToolTip(
             "Use the value typed above instead of the looked-up mass.")
         self._mass_override.toggled.connect(self._on_mass_override_toggled)
-        self._mass_spin.valueChanged.connect(self._schedule_replot)
+        self._mass_spin.valueChanged.connect(self._schedule_replot_spectrum)
         mass_layout.addWidget(self._mass_spin)
         mass_layout.addWidget(self._mass_override)
         mass_layout.addStretch()
@@ -2665,7 +2870,7 @@ class PreAnalysisTab(QWidget):
         # TOF histogram bin size \u2014 the old hard-coded 1 \u00b5s looks steppy
         # on narrow bunches; sub-\u00b5s values resolve the peak shape.
         self._tof_binsize = _make_double(
-            1.0, 0.001, 1000, 3, 0.1,
+            DEFAULT_TOF_BIN_US, 0.001, 1000, 3, 0.1,
             tooltip="TOF histogram bin size in \u00b5s (was fixed at 1 \u00b5s). "
                     "Smaller bins resolve the bunch shape; larger bins "
                     "smooth low statistics.")
@@ -3216,6 +3421,12 @@ class PreAnalysisTab(QWidget):
         super().resizeEvent(event)
         self._fit_main_splitter()
 
+    def _on_main_splitter_moved(self, *_):
+        """A drag is the user stating the width they want."""
+        sizes = self._main_splitter.sizes()
+        if len(sizes) == 2 and sizes[0] > 0:
+            self._desired_left_width = sizes[0]
+
     def _fit_main_splitter(self):
         """Keep the 2-panel splitter within the tab width.
 
@@ -3236,11 +3447,19 @@ class PreAnalysisTab(QWidget):
         sizes = sp.sizes()
         if len(sizes) != 2:
             return
-        if sum(sizes) <= avail + 2:
-            return  # already fits within the viewport
-        left = min(max(sizes[0] or 400, 380), 540)
-        center = max(400, avail - left)
-        sp.setSizes([left, center])
+        desired = self._desired_left_width or sizes[0] or 400
+        fits = sum(sizes) <= avail + 2
+        if fits and abs(sizes[0] - desired) <= 2:
+            return              # already what it should be
+        # Give the left column the width it is meant to have, taking
+        # it back only as far as leaving the plots a usable 400 px
+        # requires. The old hard 540 px ceiling meant a deliberately
+        # wider column could never survive a resize, let alone a
+        # save/load round-trip (2026-09-20).
+        room = max(380, avail - 400)
+        left = max(380, min(desired, room))
+        if not fits or left != sizes[0]:
+            sp.setSizes([left, max(400, avail - left)])
 
     # ── Debounce and TOF span ─────────────────────────────────
 
@@ -3542,18 +3761,64 @@ class PreAnalysisTab(QWidget):
         return None, ""
 
     def _on_replot_timer(self):
-        """Debounce-timer slot: dispatch a full or gate-drag fast replot."""
+        """Debounce-timer slot: full, spectrum-recompute, or fast."""
         if self._pending_spectrum_only:
             self._pending_spectrum_only = False
             # Fast path when the cache is valid; it self-falls-back to the
             # dask spectrum-only replot when the view isn't eligible.
             self._replot_spectrum_fast()
+        elif self._pending_spectrum_recompute:
+            self._pending_spectrum_recompute = False
+            self._replot(spectrum_only=True)
         else:
             self._replot(spectrum_only=False)
 
+    def _loading(self):
+        """True while a save file is being restored.
+
+        A restore sets dozens of widgets, each of which would schedule
+        a replot; the event loop is pumped during a load (so the app
+        does not look hung to Windows), so those would actually fire,
+        once per file. The restore ends with a replot of its own --
+        see the end of _restore_from_dict -- so standing down here
+        costs nothing.
+        """
+        try:
+            from gui.load_progress import is_loading
+        except Exception:                                # noqa: BLE001
+            return False
+        return is_loading()
+
     def _schedule_replot(self):
         # Full replot: redraw all panels + the calibration/cooler axes.
+        if self._loading():
+            return
         self._pending_spectrum_only = False
+        self._pending_spectrum_recompute = False
+        self._replot_timer.start()
+
+    def _schedule_replot_spectrum(self):
+        """Schedule a spectrum recompute, leaving the voltage-domain
+        panels alone.
+
+        For the inputs that move the frequency axis and nothing else:
+        Z / A, the mass, the harmonic, the energy levels. Redrawing the
+        calibration and cooler panels for those costs well over a
+        second on a real project (measured 1.3 s of a 2.0 s replot,
+        2026-09-24) and cannot change a pixel of them -- they are drawn
+        from the recorded voltages, upstream of the Doppler conversion.
+
+        A full replot already queued in this debounce window wins, since
+        it covers this. A queued gate-drag blit does NOT: its cached
+        line has the old x-data, which is exactly what moved.
+        """
+        if self._loading():
+            return
+        if self._replot_timer.isActive() and not self._pending_spectrum_only:
+            self._replot_timer.start()
+            return
+        self._pending_spectrum_only = False
+        self._pending_spectrum_recompute = True
         self._replot_timer.start()
 
     # ── Plot layout (Stacked vs Classic) ────────────────────────────
@@ -3886,6 +4151,8 @@ class PreAnalysisTab(QWidget):
         active and the flag stays False), so a stray light schedule can't
         downgrade a queued full redraw. Accepts and ignores a signal
         argument so it can be connected to toggled(bool)."""
+        if self._loading():
+            return
         if not self._replot_timer.isActive():
             self._pending_spectrum_only = True
         self._replot_timer.start()
@@ -4077,9 +4344,18 @@ class PreAnalysisTab(QWidget):
                 # New counts leave the current y-view (e.g. a gate
                 # widened/removed): rescale and re-capture the background,
                 # then blit. One full draw here, blits afterwards.
+                # The line must be HIDDEN for that capture, as for the
+                # first one above: captured visible, it was baked into
+                # the background, and every later drag frame drew the
+                # new spectrum on top of the old one (Arda, 2026-09-27:
+                # "it shows the previous spectrum when I move the tof").
                 ax.set_ylim(0.0, ymax * 1.08 if ymax > 0 else 1.0)
-                canvas.draw()
-                self._fast_bg = canvas.copy_from_bbox(ax.bbox)
+                ln.set_visible(False)
+                try:
+                    canvas.draw()
+                    self._fast_bg = canvas.copy_from_bbox(ax.bbox)
+                finally:
+                    ln.set_visible(True)
             canvas.restore_region(self._fast_bg)
             ax.draw_artist(ln)
             canvas.blit(ax.bbox)
@@ -4797,6 +5073,35 @@ class PreAnalysisTab(QWidget):
         finally:
             self._master_check.blockSignals(False)
 
+    def ui_layout(self):
+        """Adjustable geometry of this project (see gui.ui_layout).
+
+        ``plots_top`` only exists in the 2-row ("classic") layout,
+        where Spectrum and ToF share a horizontal splitter.
+        """
+        from gui.ui_layout import collect
+        return collect(
+            main=getattr(self, "_main_splitter", None),
+            plots=getattr(self, "_plot_splitter", None),
+            plots_top=getattr(self, "_top_hsplit", None))
+
+    def apply_ui_layout(self, d):
+        from gui.ui_layout import restore
+        # Record the restored left width as the intended one BEFORE
+        # applying it: the Pre-Analysis tab's showEvent fires
+        # _fit_main_splitter after the load, and without this it
+        # would treat the restored size as an accident to clamp.
+        try:
+            main = (d or {}).get("main")
+            if main and len(main) == 2 and main[0] > 0:
+                self._desired_left_width = int(main[0])
+        except (TypeError, ValueError, IndexError):
+            pass
+        restore(d,
+                main=getattr(self, "_main_splitter", None),
+                plots=getattr(self, "_plot_splitter", None),
+                plots_top=getattr(self, "_top_hsplit", None))
+
     def _cal_peers(self):
         """Loaded runs offered as calibration borrow donors.
 
@@ -5084,12 +5389,12 @@ class PreAnalysisTab(QWidget):
     def _on_z_changed(self, z):
         self._update_isotope_label()
         self._refresh_mass_display()
-        self._schedule_replot()
+        self._schedule_replot_spectrum()
 
     def _on_a_changed(self, a):
         self._update_isotope_label()
         self._refresh_mass_display()
-        self._schedule_replot()
+        self._schedule_replot_spectrum()
 
     def _update_isotope_label(self):
         if _HAS_PERIODICTABLE:
@@ -5529,7 +5834,8 @@ class PreAnalysisTab(QWidget):
             tof_mask = np.isin(entry.np_tdc, pmt_gate)
             tof_vals = entry.np_tof[tof_mask]
             if len(tof_vals) > 0:
-                binsize = float(self._tof_binsize.value()) or 1.0
+                binsize = (float(self._tof_binsize.value())
+                           or DEFAULT_TOF_BIN_US)
                 tof_bins = np.arange(
                     tof_vals.min() - 0.5 * binsize,
                     tof_vals.max() + 0.5 * binsize,
@@ -5980,6 +6286,11 @@ class PreAnalysisTab(QWidget):
         n_cool = len(cool_entries)
         n_bins = int(self._cooler_bins.value())
         cool_stats = []  # populated below; drives status strip + y-clip
+        # Whether any run drew a calibration overlay, so the legend
+        # explains the line styles only when they are on screen.
+        cal_overlay_drawn = False
+        cal_resid_drawn = False
+        cal_excluded_drawn = False
 
         for entry in self._file_entries:
             if not entry.check.isChecked():
@@ -5996,18 +6307,84 @@ class PreAnalysisTab(QWidget):
             cal_rb = entry.np_cal_readback
             if (cal_set is not None and cal_rb is not None
                     and len(cal_set) >= 2):
+                # The polynomial actually in force for this run (DENIS
+                # fits it on every load; an override replaces it). The
+                # raw CalSet/CalReadback arrays below are read once at
+                # file-open and never move, so WITHOUT this overlay an
+                # edited calibration redrew pixel-identical and the tab
+                # looked broken (2026-09-20).
+                cal_info = getattr(
+                    getattr(entry, "cls_data", None),
+                    "CalibrationInfo", None)
+                excl = ()
+                overridden = False
+                if cal_info is not None:
+                    try:
+                        excl = tuple(getattr(cal_info, "excluded", ()) or ())
+                    except Exception:
+                        excl = ()
+                    overridden = getattr(cal_info, "mode", "") != "file"
+                    if overridden:
+                        label = f"{label} [edited]"
+
+                # Excluded points are cut out of the DRAWN LINE (NaN
+                # breaks it) and shown as a red x instead. Leaving them
+                # in made the curve dive at exactly the settling points
+                # the user had just excluded, so the exclusion looked
+                # like it had done nothing (2026-09-20).
+                idx = [i for i in excl if 0 <= i < len(cal_set)]
+                rb_line = np.asarray(cal_rb, dtype=float).copy()
+                if idx:
+                    rb_line[idx] = np.nan
+
                 # Readback vs Set
                 self._cal_readback_ax.plot(
-                    cal_set, cal_rb, color=color, linewidth=1.5,
+                    cal_set, rb_line, color=color, linewidth=1.5,
                     label=label)
+                # The polynomial in force, drawn only where the user
+                # actually changed something: with a dozen runs loaded a
+                # dashed twin per run is unreadable, and for a default
+                # fit it just traces the solid line anyway.
+                if cal_info is not None and overridden:
+                    try:
+                        xs = np.linspace(float(np.min(cal_set)),
+                                         float(np.max(cal_set)), 200)
+                        self._cal_readback_ax.plot(
+                            xs, cal_info.predict_v(xs), color=color,
+                            linewidth=1.0, linestyle="--", alpha=0.8)
+                        cal_overlay_drawn = True
+                    except Exception:
+                        pass
+                if idx:
+                    self._cal_readback_ax.plot(
+                        cal_set[idx], np.asarray(cal_rb, dtype=float)[idx],
+                        linestyle="none", marker="x", markersize=7,
+                        color="#e53935", markeredgewidth=1.6, zorder=5)
+                    cal_excluded_drawn = True
                 # Difference (Readback - Set) vs Set
                 self._cal_diff_ax.plot(
-                    cal_set, cal_rb - cal_set, color=color, linewidth=1.5,
+                    cal_set, rb_line - cal_set, color=color, linewidth=1.5,
                     label=label)
-                # Step size: diff(Readback) vs Set
+                # Residual against the calibration in force -- the curve
+                # an exclusion / borrow / hand-entered coefficient set
+                # actually moves. Same override-only gating.
+                if cal_info is not None and overridden:
+                    try:
+                        self._cal_diff_ax.plot(
+                            cal_set, rb_line - cal_info.predict_v(cal_set),
+                            color=color, linewidth=1.0, linestyle=":",
+                            alpha=0.9)
+                        cal_resid_drawn = True
+                    except Exception:
+                        pass
+                # Step size: diff(Readback) vs Set. Differencing
+                # rb_line (not the raw array) so an excluded point
+                # breaks this curve too -- otherwise the step panel
+                # kept the spike the exclusion was meant to remove,
+                # while the other two panels no longer showed it.
                 self._cal_step_ax.plot(
-                    cal_set[1:], np.diff(cal_rb), color=color, linewidth=1.5,
-                    label=label)
+                    cal_set[1:], np.diff(rb_line), color=color,
+                    linewidth=1.5, label=label)
 
             if entry not in cool_entries:
                 continue
@@ -6233,7 +6610,45 @@ class PreAnalysisTab(QWidget):
         self._cool_ripple_ax.set_ylim(bottom=0)
 
         if any(fe.check.isChecked() for fe in self._file_entries):
-            self._cal_readback_ax.legend(fontsize=7)
+            # Style key: answer "what is the dashed line?" on the plot
+            # rather than in the manual. Proxy artists, so it is one
+            # entry per STYLE and not one per run.
+            from matplotlib.lines import Line2D
+
+            def _cols(n):
+                """Wrap a tall legend into columns. A 15-run project
+                produced 17 stacked entries, a third of the panel."""
+                return 1 if n <= 8 else (2 if n <= 18 else 3)
+
+            extra = []
+            if cal_overlay_drawn:
+                extra.append(Line2D(
+                    [], [], color="#aaaaaa", linestyle="--", linewidth=1.0,
+                    label="applied calibration"))
+            if cal_excluded_drawn:
+                extra.append(Line2D(
+                    [], [], color="#e53935", linestyle="none", marker="x",
+                    markersize=7, markeredgewidth=1.6,
+                    label="excluded point"))
+            handles, labels = (
+                self._cal_readback_ax.get_legend_handles_labels())
+            self._cal_readback_ax.legend(
+                handles + extra,
+                labels + [a.get_label() for a in extra],
+                fontsize=7, ncol=_cols(len(handles) + len(extra)),
+                columnspacing=1.0, handlelength=1.6, labelspacing=0.3)
+            if cal_resid_drawn:
+                d_handles, d_labels = (
+                    self._cal_diff_ax.get_legend_handles_labels())
+                proxy = Line2D(
+                    [], [], color="#aaaaaa", linestyle=":", linewidth=1.0,
+                    label="residual vs applied cal.")
+                self._cal_diff_ax.legend(
+                    d_handles + [proxy], d_labels + [proxy.get_label()],
+                    fontsize=7, loc="upper right",
+                    ncol=_cols(len(d_handles) + 1),
+                    columnspacing=1.0, handlelength=1.6,
+                    labelspacing=0.3)
             if self._cal_cooler_ax.has_data():
                 self._cal_cooler_ax.legend(fontsize=7, loc="upper right")
             if n_cool >= 1:
@@ -6441,7 +6856,13 @@ class PreAnalysisTab(QWidget):
                     fwhmg=p["fwhm_g"], fwhml=p["fwhm_l"],
                     name=f"hfs_preview_{i}",
                 )
-                bkg = satlas2.Polynomial([p["bkg"]], name=f"bkg_preview_{i}")
+                # satlas2's Polynomial takes coefficients highest
+                # power first (it evaluates with np.polyval), so the
+                # p0, p1, ... order shown in the panel is reversed
+                # here -- the same flip fitting.py does.
+                _coeffs = panel.bkg_coefficients()
+                bkg = satlas2.Polynomial(
+                    list(reversed(_coeffs)), name=f"bkg_preview_{i}")
 
                 # Apply per-peak amplitude overrides
                 peak_overrides = panel.get_peak_overrides()
@@ -6631,7 +7052,25 @@ class PreAnalysisTab(QWidget):
             "<b>\u0394 Readback (V) [step uniformity]</b><br>"
             "Change in readback voltage between consecutive scan steps. "
             "Ideally all steps should be equal. Variations indicate "
-            "non-linearity or instability in the voltage supply.")
+            "non-linearity or instability in the voltage supply."
+            "<br><br>"
+            "<b>Reading the legend</b><br>"
+            "<b>run_NNNN</b> &mdash; that run's measured calibration "
+            "points, as recorded in its ASDF.<br>"
+            "<b>run_NNNN [edited]</b> &mdash; its calibration has "
+            "been changed here: a point excluded, coefficients "
+            "borrowed from another run, or values typed by hand.<br>"
+            "<b>applied calibration</b> (grey dashed) &mdash; the "
+            "polynomial DENIS will actually use to turn set volts "
+            "into beam volts for that run. Drawn only for edited "
+            "runs, because for everyone else it simply traces the "
+            "measured points.<br>"
+            "<b>residual vs applied cal.</b> (grey dotted) &mdash; "
+            "measured points minus that polynomial: how well the "
+            "calibration in use describes the data.<br>"
+            "<b>&times;</b> (red) &mdash; a point excluded from the "
+            "calibration fit. It is cut out of the drawn line too, "
+            "so the curve breaks where it was.")
 
     def _show_cooler_info(self):
         QMessageBox.information(
@@ -6858,6 +7297,13 @@ class PreAnalysisTab(QWidget):
             "laser_override":  (self._laser_override.value()
                                 if self._laser_override_enabled.isChecked()
                                 else 0),
+            # The two values above are ALREADY gated on PA's own
+            # tickboxes, so tell compute_merged_spectrum they are
+            # authoritative (it gates on override_enabled to avoid
+            # reading the Analysis block's unticked spinbox defaults).
+            "override_enabled": (
+                self._cooler_override_enabled.isChecked()
+                or self._laser_override_enabled.isChecked()),
             "bin_mode":        ("Raw Voltage"
                                 if default_domain == "voltage"
                                 else "Frequency"),
@@ -6893,7 +7339,9 @@ class PreAnalysisTab(QWidget):
             dlg_entries, source_config, parent=self,
             default_domain=default_domain,
             default_merge_metadata=default_merge_metadata,
-            manual_offsets_map=manual_offsets_map)
+            manual_offsets_map=manual_offsets_map,
+            centroid_corrections_map=self._gp_corrections_for(
+                [e["path"] for e in dlg_entries]))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         result = dlg.get_result()
@@ -6999,6 +7447,23 @@ class PreAnalysisTab(QWidget):
     # read-only plot, Edit re-opens the MergeDialog, Export writes a
     # merged ASDF.
 
+    def _gp_corrections_for(self, paths):
+        """Per-file GP centroid corrections for *paths*, or {}.
+
+        Reaches the Reference Correction panel through the main
+        window; PA has no project of its own, so the lookup is
+        project-agnostic (see
+        ReferenceCorrectionPanel.corrections_for_paths). Any failure
+        degrades to "no corrections" -- merging must never depend on
+        the Analysis tab being in a particular state.
+        """
+        try:
+            win = self.window()
+            panel = win.analysis_tab._is_tab._ref_corr_panel
+            return panel.corrections_for_paths(paths) or {}
+        except Exception:
+            return {}
+
     def _pa_synthetic_source_config(self):
         """Build the same synthetic source_config ``_merge_checked``
         passes into MergeDialog -- used by View and Edit so the
@@ -7034,6 +7499,13 @@ class PreAnalysisTab(QWidget):
             "laser_override":  (self._laser_override.value()
                                 if self._laser_override_enabled.isChecked()
                                 else 0),
+            # The two values above are ALREADY gated on PA's own
+            # tickboxes, so tell compute_merged_spectrum they are
+            # authoritative (it gates on override_enabled to avoid
+            # reading the Analysis block's unticked spinbox defaults).
+            "override_enabled": (
+                self._cooler_override_enabled.isChecked()
+                or self._laser_override_enabled.isChecked()),
             "bin_mode":        ("Frequency"
                                 if self._xaxis_combo.currentText()
                                     in ("Frequency", "Wavenumber")
@@ -7108,7 +7580,9 @@ class PreAnalysisTab(QWidget):
             default_domain=("frequency"
                             if mfe.merge_domain == "frequency"
                             else "voltage"),
-            default_merge_metadata=existing["merge_metadata"])
+            default_merge_metadata=existing["merge_metadata"],
+            centroid_corrections_map=self._gp_corrections_for(
+                [e["path"] for e in dlg_entries]))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         result = dlg.get_result()
@@ -7392,7 +7866,8 @@ class PreAnalysisTab(QWidget):
         self._tof_enable.setChecked(bool(tof.get("enabled", False)))
         self._tof_lo.setValue(float(tof.get("lo", 30)))
         self._tof_hi.setValue(float(tof.get("hi", 60)))
-        self._tof_binsize.setValue(float(tof.get("binsize", 1.0)))
+        self._tof_binsize.setValue(
+            float(tof.get("binsize", DEFAULT_TOF_BIN_US)))
 
         self._cooler_override.setValue(
             float(cfg.get("cooler_voltage", 29977)))
@@ -7427,6 +7902,7 @@ class PreAnalysisTab(QWidget):
             int(binning.get("step_multiple", 1)))
         self._update_binning_enabled()
 
+        from gui.load_progress import report as _report
         for file_cfg in cfg.get("files", []):
             filepath = maybe_convert_path(file_cfg.get("path", ""))
             if not os.path.isfile(filepath):
@@ -7435,6 +7911,8 @@ class PreAnalysisTab(QWidget):
                     f"Data file not found, skipping:\n{filepath}")
                 continue
             _n_before = len(self._file_entries)
+            # Reading the ASDF is the slow part of a load; say which run.
+            _report(os.path.basename(filepath))
             self._load_file(filepath)
             # Apply per-file settings ONLY when a new entry was actually
             # appended. _load_file can fail silently (corrupt ASDF, bad .vasdf,

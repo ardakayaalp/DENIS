@@ -42,6 +42,8 @@ from gui.analysis.helpers import _show_scrollable_info
 from gui.analysis.blocks import (
     AnalysisBlock, SourceBlock, ModelBlock, FitterBlock, OutputBlock,
 )
+from gui.analysis.mcmc_plots import (
+    draw_corner, draw_walk, posterior_slice)
 from gui.analysis.fitting import (
     _build_models_on_source, FitWorkerThread,
 )
@@ -248,19 +250,46 @@ class _BlockContainer(QWidget):
 #  Analysis Project Widget (one per project subtab)
 # ══════════════════════════════════════════════════════════════════
 
+def cooler_offset_tag(results):
+    """The cooler-offset tag for a set of fit results, or "".
+
+    Read from run_metadata -- what the fits ACTUALLY used -- rather
+    than from the Source block, which the user may have edited since.
+    """
+    from cls_estimations.cooler_calibration import offset_tag
+    for r in results or []:
+        meta = r.get("run_metadata") or {}
+        tag = offset_tag(meta.get("cooler_offset_v", 0.0))
+        if tag:
+            return tag
+    return ""
+
+
 class AnalysisProject(QWidget):
     """A single analysis project containing a horizontal block pipeline."""
     results_ready = Signal(str, list, dict)  # project_name, results, config
     fit_progress = Signal(int, int, str)     # current, total, status
 
-    def __init__(self, name="Project", is_reference=False, parent=None):
+    def __init__(self, name="Project", is_reference=False, parent=None,
+                 is_calibration=False):
         super().__init__(parent)
         self._project_name = name
         self._is_reference = bool(is_reference)
+        # Yb runs for the cooler-voltage calibration: fitted like any
+        # other project, but not an isotope anyone wants a shift for.
+        self._is_calibration = bool(is_calibration)
         self._blocks = []
         self._fit_worker = None
         self._last_results = None
         self._last_output_config = None
+        # Temporary overlays on the configs this project's own fit
+        # gathers, keyed "source" / "output". The cooler-voltage
+        # calibration scan drives the SAME fit path the Run Fit button
+        # does, only with a different cooler offset each time, so the
+        # scan cannot drift from the real analysis the way a second
+        # copy of the config gathering would (cf. merge/pipeline,
+        # 2026-09-20). Empty for every ordinary fit.
+        self._config_overrides: dict = {}
         # Directory of the most recently saved iteration; "Re-apply
         # outputs" regenerates files into this same folder instead of
         # allocating a new iter_NNN.
@@ -778,6 +807,21 @@ class AnalysisProject(QWidget):
         print(f"[AutoFit] Applied {len(changes)} parameters to "
               f"{len(affected)} model block(s)", flush=True)
 
+    def _fit_warn(self, text):
+        """Report a reason this project will not fit.
+
+        Printed rather than shown while a scan is driving the project
+        (`_scan_driven`): a modal box in the middle of a 250-fit
+        systematic scan stops it dead, waiting for a click nobody is
+        there to give. The driver sees the fit never started and says
+        so in its own log.
+        """
+        if getattr(self, "_scan_driven", False):
+            print(f"[{self._project_name}] fit not started: {text}",
+                  flush=True)
+            return
+        QMessageBox.warning(self, "Fit Error", str(text))
+
     def _on_fit_requested(self):
         """Gather configs from all blocks and start fitting."""
         sources = self._get_blocks_by_type(SourceBlock)
@@ -786,16 +830,13 @@ class AnalysisProject(QWidget):
         outputs = self._get_blocks_by_type(OutputBlock)
 
         if not sources:
-            QMessageBox.warning(self, "Fit Error",
-                                "No enabled Source block found.")
+            self._fit_warn("No enabled Source block found.")
             return
         if not models:
-            QMessageBox.warning(self, "Fit Error",
-                                "No enabled Model block found.")
+            self._fit_warn("No enabled Model block found.")
             return
         if not fitters:
-            QMessageBox.warning(self, "Fit Error",
-                                "No enabled Fitter block found.")
+            self._fit_warn("No enabled Fitter block found.")
             return
 
         source_block = sources[0]
@@ -804,8 +845,7 @@ class AnalysisProject(QWidget):
 
         checked_files = source_block.get_checked_files()
         if not checked_files:
-            QMessageBox.warning(self, "Fit Error",
-                                "No files selected in the Source block.")
+            self._fit_warn("No files selected in the Source block.")
             return
 
         run_files = [e["path"] for e in checked_files]
@@ -835,30 +875,40 @@ class AnalysisProject(QWidget):
             if ovr and not e.get("is_merged"):
                 file_overrides_map[e["path"]] = dict(ovr)
         source_config = source_block.get_source_config()
+        source_config.update(self._config_overrides.get("source", {}))
 
         # Validate physics parameters
         if source_config["mass"] <= 0:
-            QMessageBox.warning(self, "Fit Error",
-                                "Mass must be positive.")
+            self._fit_warn("Mass must be positive.")
             return
         if source_config["ref_freq"] == 0:
-            QMessageBox.warning(self, "Fit Error",
-                                "Reference frequency is zero. Check energy "
-                                "levels (upper and lower must differ).")
+            self._fit_warn("Reference frequency is zero. Check energy "
+                           "levels (upper and lower must differ).")
             return
         if source_config["harmonic"] <= 0:
-            QMessageBox.warning(self, "Fit Error",
-                                "Harmonic must be positive.")
+            self._fit_warn("Harmonic must be positive.")
             return
 
         model_configs = [m.get_model_config() for m in models]
+        # A driver (the systematic scan) can fit this project as
+        # some earlier iteration had it configured, without
+        # touching the blocks the user is looking at: "models"
+        # replaces the model configs wholesale, "fitter" merges
+        # into the fitter settings. Both come from that
+        # iteration's config_snapshot.yaml.
+        model_override = self._config_overrides.get("models")
+        if model_override:
+            import copy as _copy
+            model_configs = _copy.deepcopy(list(model_override))
         fitter_config = fitter_block.get_fitter_config()
+        fitter_config.update(self._config_overrides.get("fitter", {}))
 
         if output_block:
             fitter_config["show_correl"] = output_block._show_correl.isChecked()
             fitter_config["min_correl"] = output_block._min_correl.value()
 
         output_config = output_block.get_output_config() if output_block else {}
+        output_config.update(self._config_overrides.get("output", {}))
 
         # Validate parameter expressions before any heavy lifting.
         source_names = []
@@ -880,11 +930,22 @@ class AnalysisProject(QWidget):
             model_configs, fitter_config, source_names, fit_mode)
         errors = [i for i in issues if i.level == "error"]
         warnings_ = [i for i in issues if i.level == "warning"]
+        driven = getattr(self, "_scan_driven", False)
         if errors:
-            _show_validation_errors(self, errors, warnings_)
+            if driven:
+                self._fit_warn("; ".join(i.message for i in errors))
+            else:
+                _show_validation_errors(self, errors, warnings_)
             return
-        if warnings_ and not _confirm_validation_warnings(self, warnings_):
+        if warnings_ and not driven and not _confirm_validation_warnings(
+                self, warnings_):
             return
+        if warnings_ and driven:
+            # The user already accepted this configuration when they
+            # ran the baseline fit; asking again, once per offset, is
+            # a scan that never finishes.
+            print(f"[{self._project_name}] proceeding despite "
+                  f"{len(warnings_)} validation warning(s)", flush=True)
 
         # Snapshot model parameters before fitting (for revert)
         self._pre_fit_snapshot = [m.to_dict() for m in models]
@@ -936,6 +997,12 @@ class AnalysisProject(QWidget):
             centroid_corrections_map=corrections_map,
             scan_filters_map=scan_filters_map,
             calibrations_map=calibrations_map,
+            # Per-run starting values, keyed by file path. The
+            # systematic scan seeds each run from its own fit at
+            # the neighbouring offset; everyone else leaves this
+            # empty and every run starts from the blocks.
+            model_configs_map=self._config_overrides.get(
+                "model_configs_map", {}),
         )
         self._fit_worker.progress.connect(
             lambda c, t, s: fitter_block.set_progress(c, t, s))
@@ -1074,11 +1141,15 @@ class AnalysisProject(QWidget):
                     if sel:
                         var_labels = [var_labels[j] for j in sel]
                         var_chain = var_chain[:, :, sel]
+                _post, _burn_used = posterior_slice(
+                    var_chain, r.get("mcmc_burn", 0),
+                    r.get("mcmc_thin", 1))
                 if need_walk:
                     diag["walk_data"] = {"labels": var_labels,
-                                         "chain": var_chain}
+                                         "chain": var_chain,
+                                         "burn": int(_burn_used)}
                 if need_correl:
-                    flat = var_chain.reshape((-1, len(var_labels)))
+                    flat = _post.reshape((-1, len(var_labels)))
                     diag["correl_data"] = {"labels": var_labels,
                                            "flatchain": flat}
             except Exception:
@@ -1149,6 +1220,14 @@ class AnalysisProject(QWidget):
         fitter_block.set_running(False)
         # code review 2026-06-02, worker-thread-exceptions-not-logged
         _log.error("Simultaneous fit failed: %s", msg)
+        if getattr(self, "_scan_driven", False):
+            # A pool-level error emits `error` and never `all_done`,
+            # so a driver waiting on results_ready would wait for
+            # ever. Tell it the fit produced nothing and let it mark
+            # the step failed and carry on.
+            print(f"[{self._project_name}] fit failed: {msg}", flush=True)
+            self.results_ready.emit(self._project_name, [], {})
+            return
         QMessageBox.critical(self, "Fit Error", msg)
 
     def _revert_fit(self):
@@ -1183,6 +1262,11 @@ class AnalysisProject(QWidget):
         base_dir = get_analysis_dir()
         project_dir = os.path.join(base_dir, self._project_name)
 
+        # Outputs taken at different assumed cooler voltages have to
+        # be told apart at a glance in the Results tree: the
+        # systematic scan produces one iteration per offset inside the
+        # same project, and they differ only by that number.
+        cooler_tag = cooler_offset_tag(results)
         if iter_dir_override:
             iter_dir = iter_dir_override
             iter_name = os.path.basename(os.path.normpath(iter_dir))
@@ -1200,13 +1284,21 @@ class AnalysisProject(QWidget):
                     except (ValueError, IndexError):
                         pass
                 next_num = max(nums, default=0) + 1
-                iter_name = f"iter_{next_num:03d}"
+                iter_name = f"iter_{next_num:03d}{cooler_tag}"
             else:
-                iter_name = output_config.get("iter_label", "manual") or "manual"
+                iter_name = (output_config.get("iter_label", "manual")
+                             or "manual") + cooler_tag
 
         iter_dir = os.path.join(project_dir, iter_name)
         # Remember for Re-apply outputs.
         self._last_iter_dir = iter_dir
+        # Tell whoever receives these results which folder they are
+        # in. The Results tab used to guess by taking the last
+        # directory in sorted order, which is right for iter_NNN and
+        # wrong for every label -- and a systematic scan writes
+        # sys_001_+12.5V_CO next to sys_001_-30V_CO, where '+' sorts
+        # first (2026-09-24).
+        output_config["iter_name"] = iter_name
         if iter_name not in self._session_iterations:
             self._session_iterations.append(iter_name)
         plots_dir = os.path.join(iter_dir, "plots")
@@ -1917,21 +2009,10 @@ class AnalysisProject(QWidget):
             labels = wd["labels"]
             chain = np.asarray(wd["chain"])  # (steps, walkers, ndim)
             n_var = len(labels)
-            fig, axes = plt.subplots(
-                n_var, 1,
-                figsize=(ws["figsize_w"], ws["panel_h"] * n_var),
-                sharex=True, squeeze=False)
-            from gui.analysis.helpers import param_axis_label
-            for i, label in enumerate(labels):
-                ax = axes[i, 0]
-                ax.plot(chain[:, :, i], alpha=ws["trace_alpha"],
-                        lw=ws["trace_lw"])
-                ax.set_ylabel(param_axis_label(label),
-                              fontsize=ws["label_size"])
-                ax.tick_params(labelsize=ws["tick_size"])
-            axes[-1, 0].set_xlabel("Step", fontsize=ws["label_size"])
-            fig.suptitle(f"Walk Plot \u2014 Run {run_num}",
-                         fontsize=ws["title_size"])
+            burn = int(wd.get("burn", 0) or 0)
+            fig = plt.figure(
+                figsize=(ws["figsize_w"], ws["panel_h"] * n_var))
+            draw_walk(fig, labels, chain, ws, run_num=run_num, burn=burn)
             fig.tight_layout(pad=0.3)
             base = f"walk_plot_run_{run_num}"
             fig.savefig(os.path.join(diag_dir, f"{base}.{fmt}"),
@@ -1939,7 +2020,7 @@ class AnalysisProject(QWidget):
             plt.close(fig)
             np.savez_compressed(os.path.join(diag_dir, f"{base}.npz"),
                                 labels=np.array(labels, dtype=object),
-                                chain=chain,
+                                chain=chain, burn=burn,
                                 plot_type="walk", run_num=str(run_num))
 
         # Correlation / corner plot
@@ -1950,39 +2031,8 @@ class AnalysisProject(QWidget):
             flat = np.asarray(cd["flatchain"])
             n_var = len(labels)
             cell = cs["cell_size"]
-            fig, axes = plt.subplots(n_var, n_var,
-                                     figsize=(cell * n_var, cell * n_var))
-            if n_var == 1:
-                axes = np.array([[axes]])
-            for i in range(n_var):
-                for j in range(n_var):
-                    ax = axes[i, j]
-                    if j > i:
-                        ax.set_visible(False)
-                        continue
-                    if i == j:
-                        ax.hist(flat[:, i], bins=cs["hist_bins"],
-                                color=cs["hist_color"],
-                                alpha=cs["hist_alpha"], density=True)
-                    else:
-                        ax.scatter(flat[:, j], flat[:, i],
-                                   s=cs["scatter_s"],
-                                   alpha=cs["scatter_alpha"],
-                                   color=cs["scatter_color"])
-                    from gui.analysis.helpers import param_axis_label
-                    if i == n_var - 1:
-                        ax.set_xlabel(param_axis_label(labels[j]),
-                                      fontsize=cs["label_size"])
-                    else:
-                        ax.set_xticklabels([])
-                    if j == 0 and i != 0:
-                        ax.set_ylabel(param_axis_label(labels[i]),
-                                      fontsize=cs["label_size"])
-                    else:
-                        ax.set_yticklabels([])
-                    ax.tick_params(labelsize=cs["tick_size"])
-            fig.suptitle(f"Correlation \u2014 Run {run_num}",
-                         fontsize=cs["title_size"])
+            fig = plt.figure(figsize=(cell * n_var, cell * n_var))
+            draw_corner(fig, labels, flat, cs, run_num=run_num)
             fig.tight_layout(pad=0.3)
             base = f"correl_plot_run_{run_num}"
             fig.savefig(os.path.join(diag_dir, f"{base}.{fmt}"),
@@ -2358,6 +2408,7 @@ class AnalysisProject(QWidget):
         out = {
             "project_name": self._project_name,
             "is_reference": self._is_reference,
+            "is_calibration": self._is_calibration,
             "blocks": blocks_out,
         }
         if include_iterations and self._session_iterations:
@@ -2367,6 +2418,7 @@ class AnalysisProject(QWidget):
     def from_dict(self, d):
         self._project_name = d.get("project_name", "Project")
         self._is_reference = bool(d.get("is_reference", False))
+        self._is_calibration = bool(d.get("is_calibration", False))
         self._session_iterations = [
             str(x) for x in (d.get("iterations") or [])]
         # Clear existing blocks
@@ -2396,6 +2448,11 @@ class AnalysisProject(QWidget):
     @property
     def is_reference(self):
         return self._is_reference
+
+    @property
+    def is_calibration(self):
+        """True for a Cooler Calibration project."""
+        return self._is_calibration
 
     def _find_reference_correction_panel(self):
         """Walk up the widget tree to locate the IsotopeShiftTab's
@@ -2471,6 +2528,170 @@ class AnalysisProject(QWidget):
                   flush=True)
         return out
 
+    def load_results_from_disk(self):
+        """Load fit results from the latest iteration on disk into
+        self._last_results so the IS tab can use them."""
+        from gui.shared_widgets import get_analysis_dir
+        base_dir = get_analysis_dir()
+        project_dir = os.path.join(base_dir, self._project_name)
+        if not os.path.isdir(project_dir):
+            return
+
+        # Find latest iteration
+        iters = sorted([d for d in os.listdir(project_dir)
+                        if os.path.isdir(os.path.join(project_dir, d))
+                        and d.startswith("iter_")])
+        if not iters:
+            return
+        iter_name = iters[-1]
+        iter_dir = os.path.join(project_dir, iter_name)
+
+        # Load parameters.csv
+        params_path = os.path.join(iter_dir, "parameters.csv")
+        if not os.path.isfile(params_path):
+            return
+
+        try:
+            import pandas as pd
+            params_df = pd.read_csv(params_path)
+        except Exception:
+            return
+
+        # Build results list from CSV + NPZ files
+        results = []
+        plots_dir = os.path.join(iter_dir, "plots")
+
+        # Group parameters by run_number
+        if "run_number" not in params_df.columns:
+            return
+        for run_num, grp in params_df.groupby("run_number"):
+            result = {
+                "success": True,
+                "run_number": str(run_num),
+                "run_file": "",
+                "report": "",
+                "params_df": {
+                    "Parameter": grp["Parameter"].tolist(),
+                    "Value": grp["Value"].tolist(),
+                    "Stderr": grp.get("Error",
+                                      grp.get("Stderr",
+                                              pd.Series([0.0] * len(grp))
+                                              )).tolist(),
+                },
+                "metadata_df": {},
+                "x": [], "y": [], "yerr": [],
+                "y_fit": [], "x_smooth": [], "y_fit_smooth": [],
+                "residuals": [],
+                "diagnostics": {},
+                "fwhm": {},
+                "peak_positions": {},
+                "fit_quality": {},
+                "run_metadata": {},
+                "harmonic": 0,
+            }
+            # Try loading NPZ for x/y data
+            npz_path = os.path.join(plots_dir, f"fit_run_{run_num}.npz")
+            if os.path.isfile(npz_path):
+                try:
+                    data = np.load(npz_path, allow_pickle=True)
+                    result["x"] = data.get("x", np.array([])).tolist()
+                    result["y"] = data.get("y", np.array([])).tolist()
+                    result["yerr"] = data.get("yerr",
+                                              np.array([])).tolist()
+                    result["x_smooth"] = data.get(
+                        "x_smooth", np.array([])).tolist()
+                    result["y_fit_smooth"] = data.get(
+                        "y_fit_smooth", np.array([])).tolist()
+                except Exception:
+                    pass
+
+            # Try loading run metadata from metadata.csv
+            meta_path = os.path.join(iter_dir, "metadata.csv")
+            if os.path.isfile(meta_path):
+                try:
+                    meta_df = pd.read_csv(meta_path)
+                    run_meta = meta_df[
+                        meta_df["run_number"].astype(str) == str(run_num)]
+                    if not run_meta.empty:
+                        result["fit_quality"] = {
+                            "redchi": run_meta.iloc[0].get(
+                                "Reduced Chi-sq", None),
+                        }
+                except Exception:
+                    pass
+
+            # Try loading run summary for cooler_v / timestamps
+            summary_path = os.path.join(iter_dir, "run_summary.csv")
+            if os.path.isfile(summary_path):
+                try:
+                    summary_df = pd.read_csv(summary_path)
+                    run_row = summary_df[
+                        summary_df["run_number"].astype(str)
+                        == str(run_num)]
+                    if not run_row.empty:
+                        rm = {}
+                        # Numeric metadata; row column name -> rm key
+                        numeric_cols = {
+                            "cooler_v": "cooler_v",
+                            "laser_set": "laser_set",
+                            "laser_set_cm1": "laser_set",
+                            "ts_start": "ts_start",
+                            "ts_stop": "ts_stop",
+                            "centroid_correction_mhz":
+                                "centroid_correction_mhz",
+                            "centroid_correction_sigma_mhz":
+                                "centroid_correction_sigma_mhz",
+                        }
+                        # Bool / string fields -- track separately
+                        # because pd.read_csv reads them differently.
+                        if "centroid_correction_applied" in (
+                                run_row.columns):
+                            v = run_row.iloc[0][
+                                "centroid_correction_applied"]
+                            if pd.notna(v):
+                                rm["centroid_correction_applied"] = (
+                                    bool(v) and str(v).lower()
+                                    not in ("false", "0", ""))
+                        if "centroid_correction_mode" in (
+                                run_row.columns):
+                            v = run_row.iloc[0][
+                                "centroid_correction_mode"]
+                            if pd.notna(v) and str(v):
+                                rm["centroid_correction_mode"] = str(v)
+                        # Restore the per-constituent correction list
+                        # for merged fits -- without this, σ_correction
+                        # propagation degrades to the mean(μ) +
+                        # RMS(σ) approximation after a save / reload
+                        # cycle.
+                        if "correction_constituents_json" in (
+                                run_row.columns):
+                            v = run_row.iloc[0][
+                                "correction_constituents_json"]
+                            if pd.notna(v) and str(v):
+                                try:
+                                    import json
+                                    rm["correction_constituents"] = (
+                                        json.loads(str(v)))
+                                except (ValueError, TypeError):
+                                    pass
+                        for col, key in numeric_cols.items():
+                            if col in run_row.columns:
+                                v = run_row.iloc[0][col]
+                                if pd.notna(v):
+                                    rm[key] = float(v)
+                        if "date" in run_row.columns:
+                            v = run_row.iloc[0]["date"]
+                            if pd.notna(v):
+                                rm["date"] = str(v)
+                        result["run_metadata"] = rm
+                except Exception:
+                    pass
+
+            results.append(result)
+
+        if results:
+            self._last_results = results
+
     def get_reference_observations(self):
         """Per-file (timestamp, centroid, sigma) tuples for a reference
         project's last fit results.
@@ -2502,7 +2723,17 @@ class AnalysisProject(QWidget):
             - ``include`` (bool): default True; the GP UI flips this to
               exclude outliers
         """
-        if not self._is_reference or not self._last_results:
+        if not self._is_reference:
+            return []
+        if not self._last_results:
+            # Reopened session: the fits are on disk, not in memory.
+            # Re-running them just to populate a list the Results tab
+            # is already displaying would be absurd (2026-09-21).
+            try:
+                self.load_results_from_disk()
+            except Exception:  # noqa: BLE001
+                pass
+        if not self._last_results:
             return []
         import math
         from cls_estimations.isotope_shift import extract_centroid
@@ -2537,14 +2768,34 @@ class AnalysisProject(QWidget):
             if ts_f <= 0 or not math.isfinite(ts_f):
                 continue
             run_num = str(r.get("run_number", "") or "")
-            label = (os.path.basename(run_file)
-                     if run_file else (run_num or "run"))
+            # Shared with every "is this run excluded?" check --
+            # the GP panel keys its exclusions on this string.
+            from gui.analysis.gp_frame import observation_label
+            label = observation_label(r)
+            # UN-correct before training. Since 2026-09-20 the
+            # reference project is corrected like any other, so a
+            # re-fit reports residuals about the GP curve rather than
+            # measured centroids -- and training the next GP on those
+            # would collapse it onto a flat zero and silently turn the
+            # correction off. The fit records exactly what it
+            # subtracted, so adding it back recovers the measured
+            # centroid exactly and makes correct -> re-fit -> correct
+            # idempotent. Only the GP's training input is un-corrected;
+            # the isotope-shift table still reads the corrected value
+            # straight off params_df.
+            c_raw = float(c)
+            if meta.get("centroid_correction_applied"):
+                try:
+                    c_raw += float(
+                        meta.get("centroid_correction_mhz", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    pass
             obs.append({
                 "run_number": run_num,
                 "label": label,
                 "run_file": run_file,
                 "ts_start": ts_f,
-                "centroid_mhz": float(c),
+                "centroid_mhz": c_raw,
                 "sigma_mhz": float(sigma),
                 "include": True,
             })

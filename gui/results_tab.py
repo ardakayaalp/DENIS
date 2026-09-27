@@ -771,6 +771,8 @@ class ResultsTab(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Handle kept so the layout can be saved / restored.
+        self._main_splitter = splitter
 
         # ── Left panel: project tree ──
         left = QWidget()
@@ -782,7 +784,13 @@ class ResultsTab(QWidget):
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
         self._tree.setRootIsDecorated(True)
-        self._tree.itemClicked.connect(self._on_item_clicked)
+        # currentItemChanged (not itemClicked): itemClicked is emitted
+        # only from mouseReleaseEvent, so walking the tree with the arrow
+        # keys moved the highlight but left the viewer on the last
+        # CLICKED item. currentItemChanged fires for both mouse and
+        # keyboard. (Not itemSelectionChanged: it carries no item, can
+        # fire twice per move, and misses Ctrl+Arrow.)
+        self._tree.currentItemChanged.connect(self._on_current_item_changed)
         # Hierarchy-aware tri-state checkboxes (cascade down on a parent
         # toggle, recompute the parent up from its children). The
         # reentrancy guard stops our own setCheckState() writes from
@@ -864,14 +872,22 @@ class ResultsTab(QWidget):
         self._text_viewer = QPlainTextEdit()
         self._text_viewer.setReadOnly(True)
         self._text_viewer.setFont(QFont("Courier", 10))
+        # One highlighter bound to the document for the widget's
+        # lifetime. Building one per selection would leave a live
+        # highlighter behind for every item ever clicked, each still
+        # reformatting on repaint.
+        from gui.fit_report_highlighter import FitReportHighlighter
+        self._report_highlighter = FitReportHighlighter(
+            self._text_viewer.document())
+        self._report_highlighter.enabled = False
         self._viewer_stack.addWidget(self._text_viewer)
 
-        # Page 2: table viewer
-        self._table_viewer = QTableWidget()
-        self._table_viewer.setAlternatingRowColors(True)
-        self._table_viewer.horizontalHeader().setStretchLastSection(False)
-        self._table_viewer.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents)
+        # Page 2: table viewer -- shaded by run, sortable, filterable
+        # (gui/csv_table_view.py). A parameters.csv is ~32 rows per run
+        # in one long list; this is what makes "just the centroids,
+        # worst error first" a two-click question.
+        from gui.csv_table_view import CsvTableView
+        self._table_viewer = CsvTableView()
         self._viewer_stack.addWidget(self._table_viewer)
 
         # Page 3: plot viewer
@@ -972,14 +988,18 @@ class ResultsTab(QWidget):
         base_dir = get_analysis_dir()
         project_dir = os.path.join(base_dir, project_name)
 
-        # Determine iteration name
-        if os.path.isdir(project_dir):
-            existing = sorted([d for d in os.listdir(project_dir)
-                               if os.path.isdir(
-                                   os.path.join(project_dir, d))])
-            iter_name = existing[-1] if existing else "iter_001"
-        else:
-            iter_name = "iter_001"
+        # Which iteration this is. The writer says so
+        # (`iter_name`); the directory scan is the fallback for
+        # callers that do not, and it can only ever be a guess.
+        iter_name = str((output_config or {}).get("iter_name") or "")
+        if not iter_name:
+            if os.path.isdir(project_dir):
+                existing = sorted([d for d in os.listdir(project_dir)
+                                   if os.path.isdir(
+                                       os.path.join(project_dir, d))])
+                iter_name = existing[-1] if existing else "iter_001"
+            else:
+                iter_name = "iter_001"
 
         # Store in memory
         if project_name not in self._results_data:
@@ -1441,19 +1461,45 @@ class ResultsTab(QWidget):
                     # Restore the iteration row's normal look IN PLACE
                     # (rebuilding the tree here would delete the clicked
                     # item out from under the caller).
-                    node.setText(0, d["iteration"])
-                    fnt = node.font(0)
-                    fnt.setBold(False)
-                    node.setFont(0, fnt)
-                    i_bg, i_fg = self._project_brushes(
-                        d["project"], iter_index=d.get("iter_index", 0))
-                    node.setBackground(0, i_bg)
-                    node.setForeground(0, i_fg)
+                    # Each of these setters emits itemChanged, which
+                    # re-enters the checkbox cascade for no reason --
+                    # and this path now runs on every arrow keypress.
+                    prev_guard = self._updating_checks
+                    self._updating_checks = True
+                    self._tree.blockSignals(True)
+                    try:
+                        node.setText(0, d["iteration"])
+                        fnt = node.font(0)
+                        fnt.setBold(False)
+                        node.setFont(0, fnt)
+                        i_bg, i_fg = self._project_brushes(
+                            d["project"],
+                            iter_index=d.get("iter_index", 0))
+                        node.setBackground(0, i_bg)
+                        node.setForeground(0, i_fg)
+                    finally:
+                        self._tree.blockSignals(False)
+                        self._updating_checks = prev_guard
                 return
             node = node.parent()
 
+    def _on_current_item_changed(self, current, previous):
+        """Viewer follows the tree's current item (mouse AND keyboard).
+
+        ``current`` is None while _rebuild_tree() clears the tree, and a
+        rebuild must not drive the viewer -- _updating_checks is held for
+        that whole span, so it doubles as the rebuild guard here.
+        """
+        if current is None or self._updating_checks:
+            return
+        self._on_item_clicked(current, 0)
+
     def _on_item_clicked(self, item, column):
-        """Display the selected item in the viewer."""
+        """Display the selected item in the viewer.
+
+        Kept item+column so the existing programmatic callers still work;
+        ``column`` is unused. Reached from _on_current_item_changed.
+        """
         # Flush any pending notes before switching away.
         self._save_notes(force=True)
 
@@ -1481,9 +1527,10 @@ class ResultsTab(QWidget):
             try:
                 with open(filepath, "r", encoding="utf-8",
                           errors="replace") as f:
-                    self._text_viewer.setPlainText(f.read())
+                    body = f.read()
+                self._set_report_text(body)
             except Exception as e:
-                self._text_viewer.setPlainText(f"Error reading file:\n{e}")
+                self._set_report_text(f"Error reading file:\n{e}")
             self._viewer_stack.setCurrentIndex(1)
             self._edit_plot_btn.setEnabled(False)
 
@@ -1491,19 +1538,10 @@ class ResultsTab(QWidget):
             try:
                 import pandas as pd
                 df = pd.read_csv(filepath)
-                self._table_viewer.setRowCount(len(df))
-                self._table_viewer.setColumnCount(len(df.columns))
-                self._table_viewer.setHorizontalHeaderLabels(
-                    list(df.columns))
-                for i in range(len(df)):
-                    for j in range(len(df.columns)):
-                        val = df.iloc[i, j]
-                        # code review 2026-06-02, results-csv-float-format-loss:
-                        # use higher precision so displayed values match file
-                        text = f"{val:.10g}" if isinstance(
-                            val, float) else str(val)
-                        self._table_viewer.setItem(
-                            i, j, QTableWidgetItem(text))
+                # Floats still shown to 10 significant figures (code
+                # review 2026-06-02, results-csv-float-format-loss) --
+                # csv_table_view.cell_text keeps that rule.
+                self._table_viewer.load(df)
             except Exception as e:
                 self._text_viewer.setPlainText(
                     f"Error reading CSV:\n{e}")
@@ -1626,6 +1664,8 @@ class ResultsTab(QWidget):
             self._render_chisq_plot(fig, data)
         elif plot_type == "isotope_shift":
             self._render_isotope_shift_plot(fig, data)
+        elif plot_type == "gp_reference":
+            self._render_gp_reference_plot(fig, data)
 
         # Hug the canvas; re-fits automatically on resize via
         # _on_plot_canvas_resize.
@@ -1991,62 +2031,18 @@ class ResultsTab(QWidget):
         axes[-1, 0].set_xlabel(xlabel, fontsize=ts["label_size"])
 
     def _render_walk_plot(self, fig, data):
-        ws = get_plot_type_settings("walk_plot")
-        run_num = str(data.get("run_num", "?"))
-        labels = list(data["labels"])
-        chain = data["chain"]
-        n_var = len(labels)
-        axes = fig.subplots(n_var, 1, sharex=True, squeeze=False)
-        from gui.analysis.helpers import param_axis_label
-        for i, label in enumerate(labels):
-            ax = axes[i, 0]
-            ax.plot(chain[:, :, i], alpha=ws["trace_alpha"],
-                    lw=ws["trace_lw"])
-            ax.set_ylabel(param_axis_label(label),
-                          fontsize=ws["label_size"])
-            ax.tick_params(labelsize=ws["tick_size"])
-        axes[-1, 0].set_xlabel("Step", fontsize=ws["label_size"])
-        fig.suptitle(f"Walk Plot \u2014 Run {run_num}",
-                     fontsize=ws["title_size"])
+        from gui.analysis.mcmc_plots import draw_walk
+        burn = data.get("burn", 0)
+        draw_walk(fig, list(data["labels"]), data["chain"],
+                  get_plot_type_settings("walk_plot"),
+                  run_num=str(data.get("run_num", "?")),
+                  burn=int(np.asarray(burn)) if burn is not None else 0)
 
     def _render_correl_plot(self, fig, data):
-        cs = get_plot_type_settings("correlation_plot")
-        run_num = str(data.get("run_num", "?"))
-        labels = list(data["labels"])
-        flat = data["flatchain"]
-        n_var = len(labels)
-        axes = fig.subplots(n_var, n_var)
-        if n_var == 1:
-            axes = np.array([[axes]])
-        for i in range(n_var):
-            for j in range(n_var):
-                ax = axes[i, j]
-                if j > i:
-                    ax.set_visible(False)
-                    continue
-                if i == j:
-                    ax.hist(flat[:, i], bins=cs["hist_bins"],
-                            color=cs["hist_color"],
-                            alpha=cs["hist_alpha"], density=True)
-                else:
-                    ax.scatter(flat[:, j], flat[:, i],
-                               s=cs["scatter_s"],
-                               alpha=cs["scatter_alpha"],
-                               color=cs["scatter_color"])
-                from gui.analysis.helpers import param_axis_label
-                if i == n_var - 1:
-                    ax.set_xlabel(param_axis_label(labels[j]),
-                                  fontsize=cs["label_size"])
-                else:
-                    ax.set_xticklabels([])
-                if j == 0 and i != 0:
-                    ax.set_ylabel(param_axis_label(labels[i]),
-                                  fontsize=cs["label_size"])
-                else:
-                    ax.set_yticklabels([])
-                ax.tick_params(labelsize=cs["tick_size"])
-        fig.suptitle(f"Correlation \u2014 Run {run_num}",
-                     fontsize=cs["title_size"])
+        from gui.analysis.mcmc_plots import draw_corner
+        draw_corner(fig, list(data["labels"]), data["flatchain"],
+                    get_plot_type_settings("correlation_plot"),
+                    run_num=str(data.get("run_num", "?")))
 
     def _render_chisq_plot(self, fig, data):
         qs = get_plot_type_settings("chisq_map")
@@ -2070,6 +2066,21 @@ class ResultsTab(QWidget):
             ax.tick_params(labelsize=qs["tick_size"])
         fig.suptitle(f"Chi-sq Map \u2014 Run {run_num}",
                      fontsize=qs["title_size"])
+
+    def _render_gp_reference_plot(self, fig, data):
+        """Render the GP reference-drift diagnostic from saved .npz data.
+
+        Drawn by gui.analysis.gp_figure.draw -- the same function the
+        Reference Correction panel draws its live figure with, fed the
+        same dict it saved. There used to be a second copy of the
+        drawing code here; it knew nothing about the time unit, the
+        residual panel or excluded points, so a figure sent in minutes
+        with residuals came back in hours without them. Older .npz
+        files still render: every new key has a default.
+        """
+        from gui.analysis import gp_figure
+        keys = getattr(data, "files", None) or list(data.keys())
+        gp_figure.draw(fig, {k: data[k] for k in keys})
 
     def _render_isotope_shift_plot(self, fig, data):
         """Render an isotope-shift comparison plot from saved .npz data.
@@ -2841,6 +2852,9 @@ class ResultsTab(QWidget):
         # Editor / preview state may still point at a file we just
         # nuked; clear it so the next click doesn't try to read it.
         self._current_item_data = None
+        # _rebuild_tree() destroys every item; a stale handle here would
+        # be a deleted C++ object the next re-render touches.
+        self._current_tree_item = None
         self._notes_path = None
         self._notes_dirty = False
         self._rebuild_tree()
@@ -2881,6 +2895,9 @@ class ResultsTab(QWidget):
         if project in self._results_data:
             del self._results_data[project]
         self._current_item_data = None
+        # _rebuild_tree() destroys every item; a stale handle here would
+        # be a deleted C++ object the next re-render touches.
+        self._current_tree_item = None
         self._notes_path = None
         self._notes_dirty = False
         self._rebuild_tree()
@@ -2911,6 +2928,27 @@ class ResultsTab(QWidget):
             pass
 
     # ── Notes (project / iteration) ──
+
+    def _set_report_text(self, body: str):
+        """Show *body*, highlighting it only if it is a fit report.
+
+        Metadata dumps and binning summaries go through the same
+        viewer and would be mangled by parameter-line rules, so the
+        highlighter is switched by content rather than left on. The
+        size guard is there because a campaign-wide report can run to
+        megabytes, and rehighlighting every block on every scroll is
+        not worth a colour.
+        """
+        from gui import fit_report_highlighter as frh
+        hl = getattr(self, "_report_highlighter", None)
+        want = (len(body) <= frh.MAX_CHARS
+                and frh.looks_like_fit_report(body))
+        if hl is not None and hl.enabled != want:
+            hl.enabled = want
+            self._text_viewer.setPlainText(body)
+            hl.rehighlight()
+            return
+        self._text_viewer.setPlainText(body)
 
     def _load_notes(self, path, label=""):
         """Load notes from `path` into the editor and switch to the notes
@@ -2967,12 +3005,39 @@ class ResultsTab(QWidget):
         except Exception as e:
             self._notes_status.setText(f"Save failed: {e}")
 
+    def ui_layout(self):
+        """Adjustable geometry of this tab (see gui.ui_layout)."""
+        from gui.ui_layout import collect
+        return collect(tree_viewer=getattr(self, "_main_splitter", None))
+
+    def apply_ui_layout(self, d):
+        from gui.ui_layout import restore
+        restore(d, tree_viewer=getattr(self, "_main_splitter", None))
+
     def _show_info(self):
         text = (
             "<h3>Results Viewer</h3>"
             "Browse and inspect all output produced by the Analysis tab. "
             "Results are organised by project and iteration in the tree "
             "on the left.<br><br>"
+
+            "<h4>Fit Report Colours</h4>"
+            "The three numbers that decide whether a fit is usable "
+            "are coloured <b>by value</b>, so a bad fit is visible "
+            "without reading every line:<br>"
+            "\u2022 <b>Relative error</b> <code>(2.35%)</code> \u2013 "
+            "green under 10%, grey to 30%, amber to 100%, red above. "
+            "A red one means the data does not constrain that "
+            "parameter at all.<br>"
+            "\u2022 <b>Correlations</b> <code>C(a, b) = +1.0000</code> "
+            "\u2013 amber above |0.80|, red above |0.95|. A red row "
+            "means those two parameters are degenerate: the fit can "
+            "trade one against the other at no cost, which is "
+            "usually what produces the red errors above it.<br>"
+            "\u2022 <b>Reduced chi-square</b> \u2013 green between "
+            "0.5 and 2, amber outside, red past 5 (model does not "
+            "describe the data) or under 0.1 (errors "
+            "overestimated).<br><br>"
 
             "<h4>Tree Structure</h4>"
             "\u2022 <b>Project</b> \u2192 <b>Iteration</b> \u2192 individual "
@@ -2982,10 +3047,14 @@ class ResultsTab(QWidget):
 
             "<h4>Viewer Panels</h4>"
             "\u2022 <b>Text</b> \u2013 Fit reports and other text files are "
-            "displayed in a monospace viewer.<br>"
+            "displayed in a monospace viewer. Fit reports are "
+            "syntax-highlighted (see below).<br>"
             "\u2022 <b>Table</b> \u2013 CSV files (parameters, metadata, "
             "tracker) are shown in an interactive table with columns sized "
             "to content.<br>"
+            "\u2022 The repeated <code>Run_xxxx___Model_n___</code> "
+            "prefix is dimmed so the parameter name itself stands "
+            "out.<br>"
             "\u2022 <b>Plot</b> \u2013 Fit plots, tracker plots, and "
             "diagnostic plots (chi-square map, correlation, walk plot) are "
             "rendered as interactive matplotlib figures with a navigation "

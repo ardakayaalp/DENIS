@@ -173,7 +173,12 @@ class CalibrationDialog(QDialog):
         # y-scales -- a settling glitch puts them ~30x apart, so sharing an axis
         # would flatten the corrected one into the zero line and hide exactly
         # the thing the user is trying to see.
-        self._fig = Figure(figsize=(7.0, 7.4))
+        # constrained_layout, not a fixed left fraction: the old
+        # left=0.16 was sized for the two-line y-labels at 7 inches
+        # nominal, and a FRACTION does not shrink as the canvas
+        # grows -- on a wide dialog it became a broad empty band
+        # (2026-09-21).
+        self._fig = Figure(figsize=(7.0, 7.4), layout="constrained")
         self._canvas = FigureCanvasQTAgg(self._fig)
         self._canvas.setToolTip(
             "Top: the measured calibration points and the polynomial through\n"
@@ -184,8 +189,16 @@ class CalibrationDialog(QDialog):
             "Click any point to include or exclude it from the fit.")
         self._ax_fit, self._ax_res0, self._ax_res1 = self._fig.subplots(
             3, 1, sharex=True, height_ratios=[2.2, 1.0, 1.0])
-        self._fig.subplots_adjust(hspace=0.12, left=0.16, right=0.97,
-                                  top=0.96, bottom=0.08)
+        _engine = self._fig.get_layout_engine()
+        if _engine is not None:
+            # rect + zero pads, or the engine adds its own band on top
+            # of the space the labels need. Measured: the y-labels and
+            # ticks want 97 px whatever the canvas is, so the plot
+            # area goes from a flat 81% to 86% at 7 in and 95% at
+            # 18 in -- the old fixed 16% was wasting 190 px on a wide
+            # dialog. The panels share an x-axis, so they sit flush.
+            _engine.set(w_pad=0.0, h_pad=0.0, hspace=0.02, wspace=0.0,
+                        rect=(0, 0, 1, 1))
         self._canvas.mpl_connect("pick_event", self._on_pick)
         body.addWidget(
             make_plot_card("Calibration fit", self._canvas,

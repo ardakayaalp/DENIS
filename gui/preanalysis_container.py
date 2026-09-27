@@ -154,6 +154,20 @@ class PreAnalysisContainer(QWidget):
 
     # ── Serialization ──
 
+    def ui_layout(self):
+        """Geometry of the first project: PA layout is session-global
+        (same as the row-layout / grid / dark-mode controls), so one
+        entry restores every project consistently."""
+        for p in self._projects:
+            d = p.ui_layout()
+            if d:
+                return d
+        return {}
+
+    def apply_ui_layout(self, d):
+        for p in self._projects:
+            p.apply_ui_layout(d)
+
     def _build_config_dict(self):
         """Serialize all projects for YAML save."""
         projects = []
@@ -174,12 +188,16 @@ class PreAnalysisContainer(QWidget):
                 self._projects.remove(widget)
             widget.deleteLater()
 
+        from gui.load_progress import report as _report
         if "projects" in data:
             # New multi-project format
-            for pd in data["projects"]:
+            defs = data["projects"]
+            for i, pd in enumerate(defs):
                 pd = dict(pd)  # copy to avoid mutating saved data
                 name = pd.pop("name", f"PA_{len(self._projects) + 1}")
+                _report(name, i, len(defs))
                 self._add_project(name, config=pd)
+            _report("", len(defs), len(defs))
         else:
             # Legacy: flat dict with files, plot_options, etc.
             self._add_project("PA_1", config=data)
