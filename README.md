@@ -164,7 +164,7 @@ Reproducing old filtered results bit-for-bit: set the flagged runs to `Reject: n
 
 ## License and Citation
 
-DENIS is released under the [MIT License](LICENSE). Releases are archived on Zenodo: cite v1.0.0 via [10.5281/zenodo.22081267](https://doi.org/10.5281/zenodo.22081267), or all versions via the concept DOI [10.5281/zenodo.22081266](https://doi.org/10.5281/zenodo.22081266) (also in [`CITATION.cff`](CITATION.cff), surfaced as GitHub's *Cite this repository* button). Please also cite **satlas2**, **clstools**, and the CIAAW/AME mass table for the underlying methods and data.
+DENIS is released under the [MIT License](LICENSE). Releases are archived on Zenodo: cite v1.1.0 via [10.5281/zenodo.22994563](https://doi.org/10.5281/zenodo.22994563) (v1.0.0: [10.5281/zenodo.22081267](https://doi.org/10.5281/zenodo.22081267)), or all versions via the concept DOI [10.5281/zenodo.22081266](https://doi.org/10.5281/zenodo.22081266) (also in [`CITATION.cff`](CITATION.cff), surfaced as GitHub's *Cite this repository* button). Please also cite **satlas2**, **clstools**, and the CIAAW/AME mass table for the underlying methods and data.
 
 ---
 

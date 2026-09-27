@@ -7284,12 +7284,12 @@
    "items": [
     "<b>LICENSE</b> &mdash; MIT, at the repository root.",
     "<b>CITATION.cff</b> &mdash; at the repository root (name, version, abstract, license, repository URL, DOI); GitHub surfaces it as a “Cite this repository” button.",
-    "<b>DOI</b> &mdash; v1.0.0: <code>10.5281/zenodo.22081267</code>; all versions (concept DOI): <code>10.5281/zenodo.22081266</code>."
+    "<b>DOI</b> &mdash; v1.1.0: <code>10.5281/zenodo.22994563</code>; v1.0.0: <code>10.5281/zenodo.22081267</code>; all versions (concept DOI): <code>10.5281/zenodo.22081266</code>."
    ]
   },
   {
    "type": "tip",
-   "text": "Cite the version you used — e.g. DENIS v1.0.0, doi:10.5281/zenodo.22081267 — or the concept DOI 10.5281/zenodo.22081266 for the project as a whole, and always cite satlas2, clstools, and the CIAAW/AME mass table for the underlying methods and data."
+   "text": "Cite the version you used — e.g. DENIS v1.1.0, doi:10.5281/zenodo.22994563 — or the concept DOI 10.5281/zenodo.22081266 for the project as a whole, and always cite satlas2, clstools, and the CIAAW/AME mass table for the underlying methods and data."
   },
   {
    "type": "related",
